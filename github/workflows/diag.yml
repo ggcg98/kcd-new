@@ -7,17 +7,17 @@ jobs:
     steps:
       - name: dump
         run: |
-          git clone --depth 1 https://github.com/felix-pb/kfd.git /tmp/kfd
+          git clone --recursive https://github.com/felix-pb/kfd.git /tmp/kfd
           cd /tmp/kfd
-          echo "======== FILE TREE ========"
-          find kfd -type f \( -name '*.h' -o -name '*.c' -o -name '*.m' \) | sort
-          echo "======== kfd_ FUNCTIONS ========"
-          grep -rhE 'kfd_[a-z_0-9]+[ ]*\(' kfd/libkfd/*.h | sed 's/^ *//' | sort -u | head -60
-          echo "======== ALL FUNC DECLS in common.h ========"
-          grep -E '^[a-zA-Z_].*\(' kfd/libkfd/common.h | head -40
-          echo "======== krkw.h ========"
-          grep -E '^[a-zA-Z_].*\(' kfd/libkfd/krkw.h | head -20
-          echo "======== puaf.h ========"
-          grep -E '^[a-zA-Z_].*\(' kfd/libkfd/puaf.h | head -20
-          echo "======== README head ========"
-          head -40 README.md
+          echo "======== ALL FILES ========"
+          find . -type f -not -path './.git/*' | sort
+          echo "======== .c COUNT ========"
+          find . -name '*.c' | wc -l
+          echo "======== .c LIST ========"
+          find . -name '*.c' | head -40
+          echo "======== .m COUNT ========"
+          find . -name '*.m' | wc -l
+          echo "======== GITMODULES ========"
+          cat .gitmodules 2>/dev/null || echo "none"
+          echo "======== libkfd.h HEAD ========"
+          head -60 kfd/libkfd.h
