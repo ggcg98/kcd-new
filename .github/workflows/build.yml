@@ -32,7 +32,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ${{ env.TC }}
-          key: kcd-tc-${{ env.SDK_VER }}-v15
+          key: kcd-tc-${{ env.SDK_VER }}-v16
 
       - name: Install toolchain
         if: steps.tc.outputs.cache-hit != 'true'
@@ -164,8 +164,9 @@ jobs:
           echo "LDP = $LDP"
           sed -i "s|-fuse-ld=ld64.lld|-fuse-ld=$LDP -Wl,-platform_version,ios,15.0,15.0|g" build.sh
           sed -i 's|-c tweak/Overlay.mm|-x objective-c -c tweak/Overlay.mm|g' build.sh
+          sed -i 's|-framework UIKit|-framework UIKit -framework CoreGraphics -framework CoreText -framework CoreImage|g' build.sh
           echo "---- patched ----"
-          grep -n 'fuse-ld\|Overlay.mm' build.sh
+          grep -n 'fuse-ld\|Overlay.mm\|framework UIKit' build.sh
 
       - name: Attach kfd
         continue-on-error: true
