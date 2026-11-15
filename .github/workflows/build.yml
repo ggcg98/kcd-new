@@ -9,7 +9,7 @@ concurrency:
 jobs:
   build:
     runs-on: ubuntu-22.04
-    timeout-minutes: 25
+    timeout-minutes: 30
     env:
       TC: ${{ github.workspace }}/.tc
     steps:
@@ -52,20 +52,33 @@ jobs:
           sudo mkdir -p /usr/local/bin
           [ -f "$TC/ld64_path.txt" ] && sudo ln -sf "$(cat "$TC/ld64_path.txt")" /usr/local/bin/ld64.lld
           sudo ln -sf "$TC/ldid" /usr/local/bin/ldid
-      - name: Extract kfd
+      - name: Import kfd
         run: |
           set -e
-          ZIP=$(ls kfd*.zip | head -1)
-          echo "ZIP=$ZIP"; ls -lh "$ZIP"
-          rm -rf /tmp/kfd_src && mkdir -p /tmp/kfd_src
-          unzip -q "$ZIP" -d /tmp/kfd_src
-          LKDIR=$(find /tmp/kfd_src -type d -name libkfd | head -1)
-          if [ -z "$LKDIR" ]; then echo "FATAL no libkfd"; exit 1; fi
-          echo "LKDIR=$LKDIR"
-          ls -la "$LKDIR" | head -40
-          echo "c=$(find "$LKDIR" -maxdepth 1 -name '*.c' | wc -l) m=$(find "$LKDIR" -maxdepth 1 -name '*.m' | wc -l)"
-          dirname "$LKDIR" > /tmp/kfd_base.txt
-          cat /tmp/kfd_base.txt
+          rm -rf /tmp/kfd
+          git clone https://github.com/felix-pb/kfd.git /tmp/kfd
+          cd /tmp/kfd
+          echo "==== recent ===="
+          git log --oneline -3
+          echo "==== try old commits ===="
+          FOUND=0
+          for D in 2023-06-01 2023-09-01 2023-11-01 2024-01-01 2024-03-01; do
+            C=$(git log --before="$D" --format="%H" -1)
+            if [ -z "$C" ]; then continue; fi
+            git checkout -q "$C" 2>/dev/null || continue
+            if [ -f kfd/libkfd/kfd.h ]; then
+              echo "HIT $D -> $C"
+              FOUND=1
+              break
+            fi
+          done
+          if [ "$FOUND" != "1" ]; then echo "FATAL: no commit has kfd/libkfd/kfd.h"; exit 1; fi
+          echo "==== verify ===="
+          ls -l kfd/libkfd/kfd.h
+          echo "libkfd c=$(ls kfd/libkfd/*.c 2>/dev/null | wc -l) m=$(ls kfd/libkfd/*.m 2>/dev/null | wc -l)"
+          echo "exploit c=$(ls kfd/exploit/*.c 2>/dev/null | wc -l)"
+          ls kfd/libkfd | head -20
+          ls kfd/exploit | head -10
       - name: Generate
         run: |
           bash setup.sh
@@ -113,14 +126,17 @@ jobs:
       - name: Attach
         run: |
           set -e
-          BASE=$(cat /tmp/kfd_base.txt)
-          rm -rf src/kcore/kfd && mkdir -p src/kcore/kfd
-          cp -r "$BASE"/* src/kcore/kfd/
-          echo "libkfd c=$(find src/kcore/kfd/libkfd -maxdepth 1 -name '*.c' | wc -l)"
+          rm -rf src/kcore/kfd
+          mkdir -p src/kcore/kfd
+          cp -r /tmp/kfd/kfd/libkfd src/kcore/kfd/libkfd
+          cp -r /tmp/kfd/kfd/exploit src/kcore/kfd/exploit
+          echo "libkfd c=$(ls src/kcore/kfd/libkfd/*.c | wc -l)"
+          echo "exploit c=$(ls src/kcore/kfd/exploit/*.c | wc -l)"
+          ls src/kcore/kfd
       - name: Build
         run: |
           cd src
-          N=$(find kcore/kfd/libkfd -maxdepth 1 -name '*.c' | wc -l)
+          N=$(ls kcore/kfd/libkfd/*.c 2>/dev/null | wc -l)
           echo "kfd=$N"
           if [ "$N" -eq 0 ]; then echo FATAL stub; exit 1; fi
           export THEOS="$TC/theos" PATH="/usr/local/bin:$TC:$PATH" AR=ar
