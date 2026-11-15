@@ -55,15 +55,39 @@ jobs:
       - name: Clone kfd
         run: |
           set -e
-          rm -rf /tmp/kfd
-          git clone --depth 1 https://github.com/Odyssey-Team/Taurine.git /tmp/kfd
-          cd /tmp/kfd
-          echo "==== kfd dirs ===="
-          find . -type d -name kfd
-          echo "==== libkfd.h ===="
-          find . -name 'libkfd.h'
-          echo "==== kfd c files ===="
-          find . -path '*kfd*' -name '*.c' | head -40
+          rm -rf /tmp/kfd_src
+          mkdir -p /tmp/kfd_src
+          try_repo() {
+            url="$1"
+            echo "==== try $url ===="
+            rm -rf /tmp/try
+            if ! git clone --depth 1 "$url" /tmp/try 2>/dev/null; then
+              echo "  clone failed"
+              return 1
+            fi
+            echo "  ---- kopen files ----"
+            grep -rl "kopen" /tmp/try --include='*.c' --include='*.h' 2>/dev/null | head -10
+            d=$(find /tmp/try -type d -name kfd | head -1)
+            if [ -z "$d" ]; then
+              echo "  no kfd dir"
+              return 1
+            fi
+            n=$(find "$d" -maxdepth 1 -name '*.c' | wc -l)
+            echo "  dir=$d  c=$n"
+            if [ "$n" -eq 0 ]; then
+              echo "  kfd dir has no .c"
+              return 1
+            fi
+            cp -r "$d" /tmp/kfd_src/kfd
+            echo "  OK COPIED"
+            return 0
+          }
+          if try_repo https://github.com/Odyssey-Team/Taurine.git; then exit 0; fi
+          if try_repo https://github.com/SerotoninApp/Serotonin.git; then exit 0; fi
+          if try_repo https://github.com/GenericCoding/poisOnKFD.git; then exit 0; fi
+          if try_repo https://github.com/hrtowii/kfd.git; then exit 0; fi
+          echo "FATAL: no repo has kfd .c"
+          exit 1
       - name: Generate
         run: |
           bash setup.sh
@@ -111,15 +135,13 @@ jobs:
       - name: Attach
         run: |
           set -e
-          KFDIR=$(find /tmp/kfd -type d -name kfd -path '*exploit*' | head -1)
-          [ -z "$KFDIR" ] && KFDIR=$(find /tmp/kfd -type d -name kfd | head -1)
-          echo "KFDIR=$KFDIR"
-          if [ -z "$KFDIR" ]; then echo "FATAL: no kfd dir"; exit 1; fi
-          ls -la "$KFDIR"
+          echo "==== attached dir ===="
+          ls -la /tmp/kfd_src/kfd
+          echo "c=$(find /tmp/kfd_src/kfd -maxdepth 1 -name '*.c' | wc -l)"
+          echo "h=$(find /tmp/kfd_src/kfd -maxdepth 1 -name '*.h' | wc -l)"
           rm -rf src/kcore/kfd && mkdir -p src/kcore/kfd/libkfd
-          cp -r "$KFDIR"/. src/kcore/kfd/libkfd/
+          cp -r /tmp/kfd_src/kfd/. src/kcore/kfd/libkfd/
           echo "final c=$(find src/kcore/kfd/libkfd -maxdepth 1 -name '*.c' | wc -l)"
-          echo "final h=$(find src/kcore/kfd/libkfd -maxdepth 1 -name '*.h' | wc -l)"
       - name: Build
         run: |
           cd src
