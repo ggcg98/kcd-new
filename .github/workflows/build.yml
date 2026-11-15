@@ -57,13 +57,18 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -e
+          echo "==== api request ===="
           curl -s -H "Authorization: Bearer $GH_TOKEN" \
-            "https://api.github.com/search/repositories?q=kfd+in:name&sort=stars&per_page=50" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/search/repositories?q=kfd+in%3Aname&sort=stars&per_page=50" \
             -o /tmp/repos.json
-          echo "==== candidates ===="
-          grep -o '"full_name":"[^"]*"' /tmp/repos.json | sed 's/"full_name":"//;s/"$//' > /tmp/cands.txt || true
+          echo "==== raw head ===="
+          head -c 400 /tmp/repos.json
+          echo ""
+          echo "==== parse ===="
+          python3 -c "import json;d=json.load(open('/tmp/repos.json'));print('\n'.join(r['full_name'] for r in d.get('items',[])))" > /tmp/cands.txt
           wc -l /tmp/cands.txt
-          head -20 /tmp/cands.txt
+          head -25 /tmp/cands.txt
 
           echo "==== probe ===="
           > /tmp/hits.txt
@@ -71,7 +76,7 @@ jobs:
             for br in main master; do
               curl -s -H "Authorization: Bearer $GH_TOKEN" \
                 "https://api.github.com/repos/$repo/git/trees/$br?recursive=1" -o /tmp/tree.json
-              N=$(grep -o '"path":"[^"]*\.c"' /tmp/tree.json | wc -l)
+              N=$(grep -o '"path": *"[^"]*\.c"' /tmp/tree.json | wc -l)
               if [ "$N" -gt 8 ]; then
                 echo "$repo|$br|$N" >> /tmp/hits.txt
                 echo "HIT $repo@$br = $N"
@@ -81,7 +86,7 @@ jobs:
           done < /tmp/cands.txt
 
           echo "==== hits ===="
-          cat /tmp/hits.txt
+          cat /tmp/hits.txt || true
           if [ ! -s /tmp/hits.txt ]; then echo "FATAL: no hit"; exit 1; fi
           head -1 /tmp/hits.txt > /tmp/kfd_repo.txt
           echo "PICK = $(cat /tmp/kfd_repo.txt)"
@@ -97,8 +102,6 @@ jobs:
           git checkout -q "$BR" 2>/dev/null || true
           echo "==== c files ===="
           find . -name '*.c' | head -40
-          echo "==== headers ===="
-          find . -name 'libkfd.h' -o -name 'kfd.h' | head
       - name: Generate
         run: |
           bash setup.sh
@@ -151,12 +154,10 @@ jobs:
           echo "LK=$LK"
           echo "EX=$EX"
           if [ -z "$LK" ]; then echo FATAL-no-libkfd; exit 1; fi
-          echo "src c=$(find "$LK" -maxdepth 1 -name '*.c' | wc -l)"
           rm -rf src/kcore/kfd && mkdir -p src/kcore/kfd
           cp -r "$LK" src/kcore/kfd/libkfd
           [ -n "$EX" ] && cp -r "$EX" src/kcore/kfd/exploit
           echo "final c=$(find src/kcore/kfd/libkfd -maxdepth 1 -name '*.c' | wc -l)"
-          ls src/kcore/kfd
       - name: Build
         run: |
           cd src
