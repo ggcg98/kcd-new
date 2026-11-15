@@ -1,94 +1,120 @@
-name: build-linux
+name: build-ios
+
 on:
   push:
+    paths-ignore:
+      - '*.md'
+      - '.gitignore'
   workflow_dispatch:
+    inputs:
+      kfd_ref:
+        description: 'kfd commit/tag'
+        required: false
+        default: ''
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
+    timeout-minutes: 15
+    env:
+      SDK_VER: iPhoneOS16.5.sdk
+      KFD_REF: ${{ github.event.inputs.kfd_ref || '' }}
+      TC: ${{ github.workspace }}/.tc
+
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install Dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y git make clang lld dpkg libssl-dev libplist-dev libxml2-dev libz-dev curl
-          wget -q https://github.com/ProcursusTeam/ldid/releases/latest/download/ldid_linux_x86_64 -O /usr/local/bin/ldid
-          chmod +x /usr/local/bin/ldid
+      - name: Restore toolchain cache
+        id: tc
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.TC }}
+          key: kcd-tc-${{ env.SDK_VER }}-v1
 
-      - name: Setup Theos
+      - name: Install toolchain
+        if: steps.tc.outputs.cache-hit != 'true'
         run: |
-          git clone --recursive --depth 1 https://github.com/theos/theos.git $HOME/theos
-          echo "$HOME/theos/bin" >> $GITHUB_PATH
+          set -e
+          sudo apt-get update -qq
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq \
+            clang lld llvm make git perl dpkg curl xz-utils libssl-dev binutils
+          sudo ln -sf /usr/lib/llvm-*/bin/ld64.lld /usr/local/bin/ld64.lld
 
-      - name: Fetch SDK
-        run: |
+          mkdir -p "$TC"
+          git clone --depth 1 https://github.com/theos/theos.git "$TC/theos"
+          chmod +x "$TC/theos/bin/logos.pl"
+
           git clone --filter=blob:none --sparse https://github.com/theos/sdks.git /tmp/sdks
-          cd /tmp/sdks && git sparse-checkout set "iPhoneOS16.5.sdk"
-          mkdir -p $HOME/theos/sdks && mv "iPhoneOS16.5.sdk" $HOME/theos/sdks/
+          cd /tmp/sdks
+          git sparse-checkout set "$SDK_VER"
+          mv "$SDK_VER" "$TC/sdk"
+
+          git clone --depth 1 https://github.com/ProcursusTeam/ldid.git /tmp/ldid
+          cd /tmp/ldid
+          git submodule update --init
+          make -j4
+          cp ldid "$TC/ldid"
+
+          echo "cache ready"
+          du -sh "$TC"
+
+      - name: Link toolchain
+        run: |
+          sudo ln -sf "$TC/ldid" /usr/local/bin/ldid || true
+          ls -l "$TC"
+          ls "$TC/sdk/System/Library/Frameworks" | head -3
 
       - name: Import kfd
+        continue-on-error: true
         run: |
-          git clone --recursive --depth 1 https://github.com/felix-pb/kfd.git /tmp/kfd
+          if [ -n "$KFD_REF" ]; then
+            git clone --recursive https://github.com/felix-pb/kfd.git /tmp/kfd
+            cd /tmp/kfd && git checkout "$KFD_REF" && git submodule update --init --recursive
+          else
+            git clone --recursive --depth 1 https://github.com/felix-pb/kfd.git /tmp/kfd
+          fi
           ls -l /tmp/kfd/libkfd/kfd.h || true
 
-      - name: Generate & Fix Compilation Errors
+      - name: Generate sources
         run: |
           bash setup.sh
-          
+          find src -type f | wc -l
+
+      - name: Attach kfd
+        continue-on-error: true
+        run: |
           if [ -d /tmp/kfd ]; then
-            rm -rf src/kcore/kfd && cp -r /tmp/kfd src/kcore/kfd
+            rm -rf src/kcore/kfd
+            cp -r /tmp/kfd src/kcore/kfd
           fi
-          
-          mv src/kcore/koffsets.c src/kcore/koffsets.m 2>/dev/null || true
-          mv src/game/ue4_offsets.c src/game/ue4_offsets.m 2>/dev/null || true
-          sed -i 's/kcore\/koffsets.c/kcore\/koffsets.m/g' src/verify.sh src/build.sh 2>/dev/null || true
-          sed -i 's/game\/ue4_offsets.c/game\/ue4_offsets.m/g' src/verify.sh src/build.sh 2>/dev/null || true
-          
-          cat > src/kcore/libproc.h <<'EOF'
-          #pragma once
-          #include <sys/types.h>
-          #include <limits.h>
-          #ifndef PATH_MAX
-          #define PATH_MAX 1024
-          #endif
-          #ifndef PROC_ALL_PIDS
-          #define PROC_ALL_PIDS 1
-          #endif
-          int proc_listpids(int type, unsigned int typeinfo, void *buffer, int buffersize);
-          int proc_pidpath(int pid, void *buffer, unsigned int buffersize);
-          EOF
 
-          sed -i 's/struct kinfo_proc \*kp = malloc(sz);/struct kinfo_proc *kp = (struct kinfo_proc *)malloc(sz);/g' src/tweak/Overlay.xm
-
-          cat > src/tweak/substrate.h <<'EOF'
-          #ifndef SUBSTRATE_H
-          #define SUBSTRATE_H
-          #include <objc/runtime.h>
-          #include <objc/message.h>
-          typedef void *MSHookFunction(void *symbol, void *replace, void **result);
-          void MSHookMessageEx(Class _class, SEL sel, IMP imp, IMP *result);
-          #endif
-          EOF
-
-          sed -i 's/I="-Ikcore/I="-Itweak -I. -Ikcore/g' src/build.sh
-          sed -i 's/-shared/-shared -lobjc -Wl,-undefined,dynamic_lookup/g' src/build.sh
-          
-          # 修复链接器
-          sed -i 's/-fuse-ld=ld64.lld/-fuse-ld=lld/g' src/build.sh
-          
-          sed -i 's/ldid -Sent.plist/ldid -Sent.plist || true/g' src/build.sh
+      - name: Verify
+        continue-on-error: true
+        run: |
+          cd src
+          export THEOS="$TC/theos"
+          export SDK_PATH="$TC/sdk"
+          export AR=llvm-ar
+          export PATH="$TC:$PATH"
+          bash verify.sh || true
 
       - name: Build
         run: |
           cd src
-          bash verify.sh || true
+          export THEOS="$TC/theos"
+          export SDK_PATH="$TC/sdk"
+          export AR=llvm-ar
+          export PATH="$TC:$PATH"
           bash build.sh
 
-      - name: Collect Artifacts
+      - name: Collect
         run: |
           mkdir -p dist
-          cp src/release/*.deb dist/ || echo "NO_DEB"
+          cp src/release/*.deb dist/ 2>/dev/null || echo NO_DEB
           ls -lh dist/
 
       - uses: actions/upload-artifact@v4
