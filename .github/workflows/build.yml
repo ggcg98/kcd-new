@@ -71,16 +71,7 @@ jobs:
           cp -r "$SRC"/. src/kcore/kfd/
           rm -f src/kcore/kfd/kfd_krw.m src/kcore/kfd/kfd_krw.h
           ls src/kcore/kfd
-          echo "--- sub ---"
-          ls src/kcore/kfd/libkfd
           echo "m=$(find src/kcore/kfd -name '*.m' | wc -l) c=$(find src/kcore/kfd -name '*.c' | wc -l) h=$(find src/kcore/kfd -name '*.h' | wc -l)"
-      - name: Diag
-        run: |
-          cd src
-          echo "=== stub ctx ==="
-          grep -n -B3 -A8 "stub" build.sh | head -22 || true
-          echo "=== krw ctx ==="
-          grep -n "krw" build.sh | head -8 || true
       - name: Patch krw.h
         run: |
           cd src
@@ -230,9 +221,6 @@ jobs:
                 s=re.sub(r'@available\([^)]*\)','0',s)
                 open(p,'w').write(s)
           print('available killed')"
-          grep -rn "@available" kcore/kfd | head -5 || true
-          echo "--- mode ---"
-          grep -n "krw" build.sh | head -6 || true
       - name: Fix headers
         run: |
           cd src
@@ -265,7 +253,12 @@ jobs:
           LDP=$(cat "$TC/ld64_path.txt")
           sed -i "s|-fuse-ld=ld64.lld|-fuse-ld=$LDP -Wl,-platform_version,ios,15.0,15.0|g" build.sh
           sed -i 's|-c tweak/Overlay.mm|-x objective-c -c tweak/Overlay.mm|g' build.sh
-          sed -i 's|-framework UIKit|-framework UIKit -framework CoreGraphics -framework CoreText -framework CoreImage|g' build.sh
+          sed -i 's|-framework UIKit|-framework UIKit -framework IOKit -framework CoreFoundation -framework CoreGraphics -framework CoreText -framework CoreImage|g' build.sh
+          python3 -c "s=open('build.sh').read()
+          if '-lobjc' not in s:
+              s=s.replace('-framework IOKit','-framework IOKit -lobjc',1)
+          open('build.sh','w').write(s)
+          print('link patched')"
       - name: Build
         run: |
           cd src
