@@ -1,62 +1,145 @@
-- name: Install toolchain
-  if: steps.tc.outputs.cache-hit != 'true'
-  run: |
-    set -e
-    echo "==== apt ===="
-    sudo apt-get update -qq
-    sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq \
-      clang lld llvm make g++ pkg-config git perl dpkg curl xz-utils \
-      libssl-dev binutils libplist-dev
+name: build-ios
 
-    echo "==== pkg-config check ===="
-    pkg-config --exists libplist-2.0 && echo "libplist OK" || echo "libplist MISSING"
+on:
+  push:
+    paths-ignore:
+      - '*.md'
+  workflow_dispatch:
+    inputs:
+      kfd_ref:
+        description: 'kfd commit/tag'
+        required: false
+        default: ''
 
-    echo "==== ld64.lld ===="
-    LDP=""
-    for v in 14 15 16 13 12 11; do
-      if [ -x "/usr/lib/llvm-$v/bin/ld64.lld" ]; then LDP="/usr/lib/llvm-$v/bin/ld64.lld"; break; fi
-    done
-    if [ -z "$LDP" ] && [ -x /usr/bin/ld64.lld ]; then LDP=/usr/bin/ld64.lld; fi
-    echo "LD64 = $LDP"
-    [ -n "$LDP" ] || { echo "FATAL: no ld64.lld"; exit 1; }
-    sudo mkdir -p /usr/local/bin
-    sudo ln -sf "$LDP" /usr/local/bin/ld64.lld
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
 
-    echo "==== theos ===="
-    mkdir -p "$TC/theos"
-    echo "$LDP" > "$TC/ld64_path.txt"
-    git clone --recursive --depth 1 https://github.com/theos/theos.git "$TC/theos"
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 25
+    env:
+      SDK_VER: iPhoneOS16.5.sdk
+      KFD_REF: ${{ github.event.inputs.kfd_ref || '' }}
+      TC: ${{ github.workspace }}/.tc
 
-    echo "==== logos.pl ===="
-    ls -l "$TC/theos/bin/logos.pl" || true
-    REAL=$(find "$TC/theos" -name 'logos.pl' -type f 2>/dev/null | head -1)
-    if [ -z "$REAL" ]; then
-      T2=$(readlink -f "$TC/theos/bin/logos.pl" 2>/dev/null || true)
-      if [ -n "$T2" ] && [ -f "$T2" ]; then REAL="$T2"; fi
-    fi
-    echo "REAL = $REAL"
-    if [ -n "$REAL" ] && [ -f "$REAL" ] && [ "$REAL" != "$TC/theos/bin/logos.pl" ]; then
-      rm -f "$TC/theos/bin/logos.pl"
-      cp "$REAL" "$TC/theos/bin/logos.pl"
-    fi
-    chmod +x "$TC/theos/bin/logos.pl"
-    ls -l "$TC/theos/bin/logos.pl"
+    steps:
+      - uses: actions/checkout@v4
 
-    echo "==== sdk ===="
-    git clone --filter=blob:none --sparse https://github.com/theos/sdks.git /tmp/sdks
-    cd /tmp/sdks
-    git sparse-checkout set "$SDK_VER"
-    mkdir -p "$TC/theos/sdks"
-    mv "$SDK_VER" "$TC/theos/sdks/"
-    ls "$TC/theos/sdks/$SDK_VER/System/Library/Frameworks" | head -5
+      - name: Restore toolchain
+        id: tc
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.TC }}
+          key: kcd-tc-${{ env.SDK_VER }}-v7
 
-    echo "==== ldid ===="
-    git clone --depth 1 https://github.com/ProcursusTeam/ldid.git /tmp/ldid
-    cd /tmp/ldid
-    git submodule update --init
-    make -j4
-    cp ldid "$TC/ldid"
-    "$TC/ldid" -h 2>&1 | head -2 || true
+      - name: Install toolchain
+        if: steps.tc.outputs.cache-hit != 'true'
+        run: |
+          set -e
+          echo "==== apt ===="
+          sudo apt-get update -qq
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq clang lld llvm make g++ pkg-config git perl dpkg curl xz-utils libssl-dev binutils libplist-dev
+          echo "==== ld64 ===="
+          LDP=""
+          for v in 14 15 16 13 12 11; do
+            if [ -x "/usr/lib/llvm-$v/bin/ld64.lld" ]; then LDP="/usr/lib/llvm-$v/bin/ld64.lld"; break; fi
+          done
+          if [ -z "$LDP" ] && [ -x /usr/bin/ld64.lld ]; then LDP=/usr/bin/ld64.lld; fi
+          echo "LD64 = $LDP"
+          if [ -z "$LDP" ]; then echo "FATAL no ld64"; exit 1; fi
+          sudo ln -sf "$LDP" /usr/local/bin/ld64.lld
+          echo "==== theos ===="
+          mkdir -p "$TC/theos"
+          echo "$LDP" > "$TC/ld64_path.txt"
+          git clone --recursive --depth 1 https://github.com/theos/theos.git "$TC/theos"
+          echo "==== logos ===="
+          REAL=$(find "$TC/theos" -name 'logos.pl' -type f 2>/dev/null | head -1)
+          echo "REAL = $REAL"
+          if [ -n "$REAL" ] && [ "$REAL" != "$TC/theos/bin/logos.pl" ]; then
+            rm -f "$TC/theos/bin/logos.pl"
+            cp "$REAL" "$TC/theos/bin/logos.pl"
+          fi
+          chmod +x "$TC/theos/bin/logos.pl"
+          echo "==== sdk ===="
+          git clone --filter=blob:none --sparse https://github.com/theos/sdks.git /tmp/sdks
+          cd /tmp/sdks
+          git sparse-checkout set "$SDK_VER"
+          mkdir -p "$TC/theos/sdks"
+          mv "$SDK_VER" "$TC/theos/sdks/"
+          echo "==== ldid ===="
+          git clone --depth 1 https://github.com/ProcursusTeam/ldid.git /tmp/ldid
+          cd /tmp/ldid
+          git submodule update --init
+          make -j4
+          cp ldid "$TC/ldid"
+          echo "==== ready ===="
+          du -sh "$TC"
 
-    echo "==== ready ===="
-    du -sh "$TC"
+      - name: Link
+        run: |
+          sudo mkdir -p /usr/local/bin
+          if [ -f "$TC/ld64_path.txt" ]; then sudo ln -sf "$(cat "$TC/ld64_path.txt")" /usr/local/bin/ld64.lld; fi
+          sudo ln -sf "$TC/ldid" /usr/local/bin/ldid
+          echo "ld64 -> $(readlink -f /usr/local/bin/ld64.lld)"
+          echo "ldid -> $(readlink -f /usr/local/bin/ldid)"
+          ls -l "$TC/theos/bin/logos.pl"
+          ls "$TC/theos/sdks"
+
+      - name: Smoke
+        run: |
+          set -e
+          S="$TC/theos/sdks/iPhoneOS16.5.sdk"
+          echo "SDK = $S"
+          echo 'int main(void){return 0;}' > /tmp/t.c
+          clang -target arm64-apple-ios15.0 -isysroot "$S" -c /tmp/t.c -o /tmp/t.o
+          file /tmp/t.o
+          clang -target arm64-apple-ios15.0 -isysroot "$S" /tmp/t.o -fuse-ld="$(cat "$TC/ld64_path.txt")" -o /tmp/t.out
+          file /tmp/t.out
+          printf '%%hook NSObject\n- (id)description { return %%orig; }\n%%end\n' > /tmp/x.xm
+          perl "$TC/theos/bin/logos.pl" /tmp/x.xm > /tmp/x.mm
+          wc -l /tmp/x.mm
+          echo "SMOKE OK"
+
+      - name: Import kfd
+        continue-on-error: true
+        run: |
+          git clone --recursive --depth 1 https://github.com/felix-pb/kfd.git /tmp/kfd || true
+          ls -l /tmp/kfd/libkfd/kfd.h || echo "no kfd"
+
+      - name: Generate
+        run: |
+          bash setup.sh
+          find src -type f | wc -l
+
+      - name: Attach kfd
+        continue-on-error: true
+        run: |
+          if [ -d /tmp/kfd ]; then rm -rf src/kcore/kfd; cp -r /tmp/kfd src/kcore/kfd; fi
+
+      - name: Build
+        run: |
+          cd src
+          export THEOS="$TC/theos"
+          export PATH="/usr/local/bin:$TC:$PATH"
+          export AR=ar
+          bash build.sh
+
+      - name: Inspect
+        if: always()
+        run: |
+          ls -lh src/release/ 2>/dev/null || true
+          ls -lh src/tweak/*.dylib 2>/dev/null || true
+
+      - name: Collect
+        run: |
+          mkdir -p dist
+          cp src/release/*.deb dist/ || { echo NO_DEB; exit 1; }
+          ls -lh dist/
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: KCD-deb
+          path: dist/*.deb
+          if-no-files-found: error
