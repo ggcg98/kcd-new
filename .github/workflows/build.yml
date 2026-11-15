@@ -1,153 +1,23 @@
-name: build-ios
+name: kfd-diag
 on:
-  push:
-    paths-ignore: ['*.md']
   workflow_dispatch:
-concurrency:
-  group: build-${{ github.ref }}
-  cancel-in-progress: true
 jobs:
-  build:
+  diag:
     runs-on: ubuntu-22.04
-    timeout-minutes: 30
-    env:
-      TC: ${{ github.workspace }}/.tc
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/cache@v4
-        id: tc
-        with:
-          path: ${{ env.TC }}
-          key: kcd-tc-v16
-      - name: Install
-        if: steps.tc.outputs.cache-hit != 'true'
+      - name: dump
         run: |
-          set -e
-          sudo apt-get update -qq
-          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq clang lld llvm make g++ pkg-config git perl dpkg curl xz-utils unzip libssl-dev binutils libplist-dev
-          LDP=""
-          for v in 14 15 16 13 12 11; do
-            if [ -x "/usr/lib/llvm-$v/bin/ld64.lld" ]; then LDP="/usr/lib/llvm-$v/bin/ld64.lld"; break; fi
-          done
-          [ -z "$LDP" ] && [ -x /usr/bin/ld64.lld ] && LDP=/usr/bin/ld64.lld
-          sudo ln -sf "$LDP" /usr/local/bin/ld64.lld
-          mkdir -p "$TC/theos/bin/lib/Logos" "$TC/theos/sdks"
-          echo "$LDP" > "$TC/ld64_path.txt"
-          printf '#!/bin/sh\ncat "$1"\n' > "$TC/theos/bin/logos.pl"
-          chmod +x "$TC/theos/bin/logos.pl"
-          printf 'package Logos::Util;\n1;\n' > "$TC/theos/bin/lib/Logos/Util.pm"
-          rm -rf /tmp/sdks
-          git clone --filter=blob:none --sparse https://github.com/theos/sdks.git /tmp/sdks
-          cd /tmp/sdks
-          git sparse-checkout set iPhoneOS16.5.sdk
-          mv iPhoneOS16.5.sdk "$TC/theos/sdks/"
-          rm -rf /tmp/ldid
-          git clone --depth 1 https://github.com/ProcursusTeam/ldid.git /tmp/ldid
-          cd /tmp/ldid
-          git submodule update --init
-          make -j4
-          cp ldid "$TC/ldid"
-      - name: Link
-        run: |
-          sudo mkdir -p /usr/local/bin
-          [ -f "$TC/ld64_path.txt" ] && sudo ln -sf "$(cat "$TC/ld64_path.txt")" /usr/local/bin/ld64.lld
-          sudo ln -sf "$TC/ldid" /usr/local/bin/ldid
-      - name: Import kfd
-        run: |
-          set -e
-          rm -rf /tmp/kfd
-          git clone https://github.com/felix-pb/kfd.git /tmp/kfd
+          git clone --depth 1 https://github.com/felix-pb/kfd.git /tmp/kfd
           cd /tmp/kfd
-          echo "==== recent ===="
-          git log --oneline -3
-          echo "==== try old commits ===="
-          FOUND=0
-          for D in 2023-06-01 2023-09-01 2023-11-01 2024-01-01 2024-03-01; do
-            C=$(git log --before="$D" --format="%H" -1)
-            if [ -z "$C" ]; then continue; fi
-            git checkout -q "$C" 2>/dev/null || continue
-            if [ -f kfd/libkfd/kfd.h ]; then
-              echo "HIT $D -> $C"
-              FOUND=1
-              break
-            fi
-          done
-          if [ "$FOUND" != "1" ]; then echo "FATAL: no commit has kfd/libkfd/kfd.h"; exit 1; fi
-          echo "==== verify ===="
-          ls -l kfd/libkfd/kfd.h
-          echo "libkfd c=$(ls kfd/libkfd/*.c 2>/dev/null | wc -l) m=$(ls kfd/libkfd/*.m 2>/dev/null | wc -l)"
-          echo "exploit c=$(ls kfd/exploit/*.c 2>/dev/null | wc -l)"
-          ls kfd/libkfd | head -20
-          ls kfd/exploit | head -10
-      - name: Generate
-        run: |
-          bash setup.sh
-          find src -type f | wc -l
-      - name: Fix ext
-        run: |
-          cd src
-          [ -f kcore/koffsets.c ] && mv kcore/koffsets.c kcore/koffsets.m
-          [ -f game/ue4_offsets.c ] && mv game/ue4_offsets.c game/ue4_offsets.m
-          sed -i 's|kcore/koffsets\.c|kcore/koffsets.m|g' build.sh
-          sed -i 's|game/ue4_offsets\.c|game/ue4_offsets.m|g' build.sh
-      - name: Fix headers
-        run: |
-          cd src
-          python3 -c "p='kcore/kern.m';s=open(p).read();s=s.replace('#include <libproc.h>','#include <sys/syslimits.h>\n#define PROC_ALL_PIDS 1\nextern int proc_listpids(unsigned int, unsigned int, void *, int);\nextern int proc_pidpath(int, void *, unsigned int);');open(p,'w').write(s)"
-          python3 -c "p='tweak/Overlay.xm';s=open(p).read();s=s.replace('#include <sys/sysctl.h>','#include <unistd.h>\n#include <sys/sysctl.h>');s=s.replace('struct kinfo_proc *kp = malloc(sz);','struct kinfo_proc *kp = (struct kinfo_proc *)malloc(sz);');open(p,'w').write(s)"
-      - name: Fix hook
-        run: |
-          cd src
-          printf '%s\n' \
-            '#include <objc/runtime.h>' \
-            'static void (*kcd_orig_adfl)(id, SEL, id) = 0;' \
-            'static void kcd_hook_adfl(id self, SEL _cmd, id a) {' \
-            '    if (kcd_orig_adfl) kcd_orig_adfl(self, _cmd, a);' \
-            '    load_cfg();' \
-            '    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ make_window(); });' \
-            '    dispatch_async(dispatch_get_global_queue(0, 0), ^{ scan_loop(NULL); });' \
-            '}' \
-            '__attribute__((constructor)) static void kcd_install_hook(void) {' \
-            '    Class c = objc_getClass("SpringBoard");' \
-            '    if (!c) return;' \
-            '    Method m = class_getInstanceMethod(c, @selector(applicationDidFinishLaunching:));' \
-            '    if (!m) return;' \
-            '    kcd_orig_adfl = (void (*)(id, SEL, id))method_getImplementation(m);' \
-            '    method_setImplementation(m, (IMP)kcd_hook_adfl);' \
-            '}' > /tmp/hook.txt
-          python3 -c "import re;p='tweak/Overlay.xm';s=open(p).read();h=open('/tmp/hook.txt').read();n=re.sub(r'%hook\s+SpringBoard.*?%end',h,s,flags=re.S);open(p,'w').write(n)"
-      - name: Patch
-        run: |
-          cd src
-          LDP=$(cat "$TC/ld64_path.txt")
-          sed -i "s|-fuse-ld=ld64.lld|-fuse-ld=$LDP -Wl,-platform_version,ios,15.0,15.0|g" build.sh
-          sed -i 's|-c tweak/Overlay.mm|-x objective-c -c tweak/Overlay.mm|g' build.sh
-          sed -i 's|-framework UIKit|-framework UIKit -framework CoreGraphics -framework CoreText -framework CoreImage|g' build.sh
-      - name: Attach
-        run: |
-          set -e
-          rm -rf src/kcore/kfd
-          mkdir -p src/kcore/kfd
-          cp -r /tmp/kfd/kfd/libkfd src/kcore/kfd/libkfd
-          cp -r /tmp/kfd/kfd/exploit src/kcore/kfd/exploit
-          echo "libkfd c=$(ls src/kcore/kfd/libkfd/*.c | wc -l)"
-          echo "exploit c=$(ls src/kcore/kfd/exploit/*.c | wc -l)"
-          ls src/kcore/kfd
-      - name: Build
-        run: |
-          cd src
-          N=$(ls kcore/kfd/libkfd/*.c 2>/dev/null | wc -l)
-          echo "kfd=$N"
-          if [ "$N" -eq 0 ]; then echo FATAL stub; exit 1; fi
-          export THEOS="$TC/theos" PATH="/usr/local/bin:$TC:$PATH" AR=ar
-          bash build.sh
-      - name: Collect
-        run: |
-          mkdir -p dist
-          cp src/release/*.deb dist/
-          ls -lh dist/
-      - uses: actions/upload-artifact@v4
-        with:
-          name: KCD-deb
-          path: dist/*.deb
-          if-no-files-found: error
+          echo "======== FILE TREE ========"
+          find kfd -type f \( -name '*.h' -o -name '*.c' -o -name '*.m' \) | sort
+          echo "======== kfd_ FUNCTIONS ========"
+          grep -rhE 'kfd_[a-z_0-9]+[ ]*\(' kfd/libkfd/*.h | sed 's/^ *//' | sort -u | head -60
+          echo "======== ALL FUNC DECLS in common.h ========"
+          grep -E '^[a-zA-Z_].*\(' kfd/libkfd/common.h | head -40
+          echo "======== krkw.h ========"
+          grep -E '^[a-zA-Z_].*\(' kfd/libkfd/krkw.h | head -20
+          echo "======== puaf.h ========"
+          grep -E '^[a-zA-Z_].*\(' kfd/libkfd/puaf.h | head -20
+          echo "======== README head ========"
+          head -40 README.md
