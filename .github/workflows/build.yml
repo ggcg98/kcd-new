@@ -32,7 +32,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ${{ env.TC }}
-          key: kcd-tc-${{ env.SDK_VER }}-v12
+          key: kcd-tc-${{ env.SDK_VER }}-v13
 
       - name: Install toolchain
         if: steps.tc.outputs.cache-hit != 'true'
@@ -92,7 +92,6 @@ jobs:
           sudo ln -sf "$TC/ldid" /usr/local/bin/ldid
           echo "ld64 -> $(readlink -f /usr/local/bin/ld64.lld)"
           echo "ldid -> $(readlink -f /usr/local/bin/ldid)"
-          ls "$TC/theos/sdks"
 
       - name: Smoke
         run: |
@@ -129,8 +128,15 @@ jobs:
           if [ -f game/ue4_offsets.c ]; then mv game/ue4_offsets.c game/ue4_offsets.m; echo "ue4_offsets -> .m"; fi
           sed -i 's|kcore/koffsets\.c|kcore/koffsets.m|g' build.sh
           sed -i 's|game/ue4_offsets\.c|game/ue4_offsets.m|g' build.sh
-          echo "---- build.sh file list ----"
-          grep -n 'kcore/\|game/' build.sh | head -20
+
+      - name: Fix headers
+        run: |
+          cd src
+          python3 -c "p='kcore/kern.m';s=open(p).read();s=s.replace('#include <libproc.h>','#include <sys/syslimits.h>\n#define PROC_ALL_PIDS 1\nextern int proc_listpids(unsigned int, unsigned int, void *, int);\nextern int proc_pidpath(int, void *, unsigned int);');open(p,'w').write(s);print('libproc patched')"
+          python3 -c "p='tweak/Overlay.xm';s=open(p).read();s=s.replace('#include <sys/sysctl.h>','#include <unistd.h>\n#include <sys/sysctl.h>');open(p,'w').write(s);print('unistd patched')"
+          echo "---- check ----"
+          head -12 kcore/kern.m
+          grep -n 'unistd\|sysctl' tweak/Overlay.xm | head -5
 
       - name: Fix hook
         run: |
@@ -152,9 +158,7 @@ jobs:
             '    kcd_orig_adfl = (void (*)(id, SEL, id))method_getImplementation(m);' \
             '    method_setImplementation(m, (IMP)kcd_hook_adfl);' \
             '}' > /tmp/hook.txt
-          wc -l /tmp/hook.txt
           python3 -c "import re;p='tweak/Overlay.xm';s=open(p).read();h=open('/tmp/hook.txt').read();n=re.sub(r'%hook\s+SpringBoard.*?%end',h,s,flags=re.S);open(p,'w').write(n);print('hook replaced:',len(s),'->',len(n))"
-          grep -c 'kcd_hook_adfl' tweak/Overlay.xm || true
 
       - name: Patch build.sh
         run: |
