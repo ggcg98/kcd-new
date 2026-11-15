@@ -52,111 +52,24 @@ jobs:
           sudo mkdir -p /usr/local/bin
           [ -f "$TC/ld64_path.txt" ] && sudo ln -sf "$(cat "$TC/ld64_path.txt")" /usr/local/bin/ld64.lld
           sudo ln -sf "$TC/ldid" /usr/local/bin/ldid
-      - name: Clone kfd
+      - name: Inspect kfd
         run: |
-          set -e
-          rm -rf /tmp/kfd_src
-          mkdir -p /tmp/kfd_src
-          try_repo() {
-            url="$1"
-            echo "==== try $url ===="
-            rm -rf /tmp/try
-            if ! git clone --depth 1 "$url" /tmp/try 2>/dev/null; then
-              echo "  clone failed"
-              return 1
-            fi
-            echo "  ---- kopen files ----"
-            grep -rl "kopen" /tmp/try --include='*.c' --include='*.h' 2>/dev/null | head -10
-            d=$(find /tmp/try -type d -name kfd | head -1)
-            if [ -z "$d" ]; then
-              echo "  no kfd dir"
-              return 1
-            fi
-            n=$(find "$d" -maxdepth 1 -name '*.c' | wc -l)
-            echo "  dir=$d  c=$n"
-            if [ "$n" -eq 0 ]; then
-              echo "  kfd dir has no .c"
-              return 1
-            fi
-            cp -r "$d" /tmp/kfd_src/kfd
-            echo "  OK COPIED"
-            return 0
-          }
-          if try_repo https://github.com/Odyssey-Team/Taurine.git; then exit 0; fi
-          if try_repo https://github.com/SerotoninApp/Serotonin.git; then exit 0; fi
-          if try_repo https://github.com/GenericCoding/poisOnKFD.git; then exit 0; fi
-          if try_repo https://github.com/hrtowii/kfd.git; then exit 0; fi
-          echo "FATAL: no repo has kfd .c"
-          exit 1
-      - name: Generate
+          rm -rf /tmp/t
+          git clone --depth 1 https://github.com/Odyssey-Team/Taurine.git /tmp/t
+          cd /tmp/t/Taurine/exploit/kfd
+          echo "==== FILES ===="
+          ls -la
+          echo "==== LINE COUNTS ===="
+          wc -l *.h
+          echo "==== kfd_krw.h HEAD 50 ===="
+          head -50 kfd_krw.h
+          echo "==== kfd_krw.h FUNC BODIES ===="
+          grep -n '^[a-zA-Z_].*(' kfd_krw.h | head -20
+          echo "==== libkfd.h INCLUDES ===="
+          grep -n '#include' libkfd.h
+          echo "==== libkfd.h TAIL 25 ===="
+          tail -25 libkfd.h
+      - name: Stop
         run: |
-          bash setup.sh
-          find src -type f | wc -l
-      - name: Fix ext
-        run: |
-          cd src
-          [ -f kcore/koffsets.c ] && mv kcore/koffsets.c kcore/koffsets.m
-          [ -f game/ue4_offsets.c ] && mv game/ue4_offsets.c game/ue4_offsets.m
-          sed -i 's|kcore/koffsets\.c|kcore/koffsets.m|g' build.sh
-          sed -i 's|game/ue4_offsets\.c|game/ue4_offsets.m|g' build.sh
-      - name: Fix headers
-        run: |
-          cd src
-          python3 -c "p='kcore/kern.m';s=open(p).read();s=s.replace('#include <libproc.h>','#include <sys/syslimits.h>\n#define PROC_ALL_PIDS 1\nextern int proc_listpids(unsigned int, unsigned int, void *, int);\nextern int proc_pidpath(int, void *, unsigned int);');open(p,'w').write(s)"
-          python3 -c "p='tweak/Overlay.xm';s=open(p).read();s=s.replace('#include <sys/sysctl.h>','#include <unistd.h>\n#include <sys/sysctl.h>');s=s.replace('struct kinfo_proc *kp = malloc(sz);','struct kinfo_proc *kp = (struct kinfo_proc *)malloc(sz);');open(p,'w').write(s)"
-      - name: Fix hook
-        run: |
-          cd src
-          printf '%s\n' \
-            '#include <objc/runtime.h>' \
-            'static void (*kcd_orig_adfl)(id, SEL, id) = 0;' \
-            'static void kcd_hook_adfl(id self, SEL _cmd, id a) {' \
-            '    if (kcd_orig_adfl) kcd_orig_adfl(self, _cmd, a);' \
-            '    load_cfg();' \
-            '    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ make_window(); });' \
-            '    dispatch_async(dispatch_get_global_queue(0, 0), ^{ scan_loop(NULL); });' \
-            '}' \
-            '__attribute__((constructor)) static void kcd_install_hook(void) {' \
-            '    Class c = objc_getClass("SpringBoard");' \
-            '    if (!c) return;' \
-            '    Method m = class_getInstanceMethod(c, @selector(applicationDidFinishLaunching:));' \
-            '    if (!m) return;' \
-            '    kcd_orig_adfl = (void (*)(id, SEL, id))method_getImplementation(m);' \
-            '    method_setImplementation(m, (IMP)kcd_hook_adfl);' \
-            '}' > /tmp/hook.txt
-          python3 -c "import re;p='tweak/Overlay.xm';s=open(p).read();h=open('/tmp/hook.txt').read();n=re.sub(r'%hook\s+SpringBoard.*?%end',h,s,flags=re.S);open(p,'w').write(n)"
-      - name: Patch
-        run: |
-          cd src
-          LDP=$(cat "$TC/ld64_path.txt")
-          sed -i "s|-fuse-ld=ld64.lld|-fuse-ld=$LDP -Wl,-platform_version,ios,15.0,15.0|g" build.sh
-          sed -i 's|-c tweak/Overlay.mm|-x objective-c -c tweak/Overlay.mm|g' build.sh
-          sed -i 's|-framework UIKit|-framework UIKit -framework CoreGraphics -framework CoreText -framework CoreImage|g' build.sh
-      - name: Attach
-        run: |
-          set -e
-          echo "==== attached dir ===="
-          ls -la /tmp/kfd_src/kfd
-          echo "c=$(find /tmp/kfd_src/kfd -maxdepth 1 -name '*.c' | wc -l)"
-          echo "h=$(find /tmp/kfd_src/kfd -maxdepth 1 -name '*.h' | wc -l)"
-          rm -rf src/kcore/kfd && mkdir -p src/kcore/kfd/libkfd
-          cp -r /tmp/kfd_src/kfd/. src/kcore/kfd/libkfd/
-          echo "final c=$(find src/kcore/kfd/libkfd -maxdepth 1 -name '*.c' | wc -l)"
-      - name: Build
-        run: |
-          cd src
-          N=$(find kcore/kfd/libkfd -maxdepth 1 -name '*.c' | wc -l)
-          echo "kfd=$N"
-          if [ "$N" -eq 0 ]; then echo FATAL-stub; exit 1; fi
-          export THEOS="$TC/theos" PATH="/usr/local/bin:$TC:$PATH" AR=ar
-          bash build.sh
-      - name: Collect
-        run: |
-          mkdir -p dist
-          cp src/release/*.deb dist/
-          ls -lh dist/
-      - uses: actions/upload-artifact@v4
-        with:
-          name: KCD-deb
-          path: dist/*.deb
-          if-no-files-found: error
+          echo "==== INSPECT ONLY - no build ===="
+          exit 0
