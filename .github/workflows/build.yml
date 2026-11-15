@@ -69,15 +69,16 @@ jobs:
           rm -rf src/kcore/kfd
           mkdir -p src/kcore/kfd
           cp -r "$SRC"/. src/kcore/kfd/
+          rm -f src/kcore/kfd/kfd_krw.m src/kcore/kfd/kfd_krw.h
           ls src/kcore/kfd
           echo "--- sub ---"
-          ls src/kcore/kfd/libkfd | head -20
+          ls src/kcore/kfd/libkfd
           echo "m=$(find src/kcore/kfd -name '*.m' | wc -l) c=$(find src/kcore/kfd -name '*.c' | wc -l) h=$(find src/kcore/kfd -name '*.h' | wc -l)"
       - name: Diag
         run: |
           cd src
-          echo "=== kfd refs in build.sh ==="
-          grep -n "kfd\|CFLAGS\|libkfd\|stub" build.sh | head -25 || true
+          echo "=== kfd refs ==="
+          grep -n "kfd\|CFLAGS\|stub" build.sh | head -25 || true
       - name: Patch krw.h
         run: |
           cd src
@@ -93,9 +94,19 @@ jobs:
           '#include <string.h>' \
           '#include <stdio.h>' \
           '' \
+          '#ifndef OFF_PMAP_TTEP' \
+          '#define OFF_PMAP_TTEP 0x08' \
+          '#endif' \
+          '#ifndef KFD_PUAF_LANDA' \
+          '#define KFD_PUAF_LANDA 0' \
+          '#define KFD_PUAF_PHYSPUPPET 1' \
+          '#define KFD_PUAF_SMITH 2' \
+          '#define KFD_KREAD_SEM 2' \
+          '#define KFD_KWRITE_SEM 2' \
+          '#endif' \
+          '' \
           '#if __has_include(<libkfd.h>)' \
           '#include <libkfd.h>' \
-          '#include <kfd_krw.h>' \
           '#define HAVE_KFD 1' \
           '#else' \
           '#define HAVE_KFD 0' \
@@ -117,9 +128,9 @@ jobs:
           '}' \
           '' \
           'static int kfd_up(void) {' \
-          '    if (!try_open(puaf_landa, kread_sem_open, kwrite_sem_open) &&' \
-          '        !try_open(puaf_physpuppet, kread_sem_open, kwrite_sem_open) &&' \
-          '        !try_open(puaf_smith, kread_sem_open, kwrite_sem_open)) {' \
+          '    if (!try_open(KFD_PUAF_LANDA, KFD_KREAD_SEM, KFD_KWRITE_SEM) &&' \
+          '        !try_open(KFD_PUAF_PHYSPUPPET, KFD_KREAD_SEM, KFD_KWRITE_SEM) &&' \
+          '        !try_open(KFD_PUAF_SMITH, KFD_KREAD_SEM, KFD_KWRITE_SEM)) {' \
           '        fprintf(stderr, "[kcd] kopen failed"); return -1;' \
           '    }' \
           '    struct kfd *kd = (struct kfd *)g_h;' \
@@ -204,7 +215,10 @@ jobs:
           sed -i 's|kcore/kfd/libkfd/\*\.c|kcore/kfd/*.c|g' build.sh
           sed -i 's|kcore/kfd/libkfd/\*\.m|kcore/kfd/*.m|g' build.sh
           sed -i 's|-Ikcore/kfd/kfd|-Ikcore/kfd -Ikcore/kfd/libkfd -Ikcore/kfd/libkfd/libkfd|g' build.sh
-          sed -i 's|-Ikcore/kfd/libkfd/info|-Ikcore/kfd/libkfd/info -Ikcore/kfd/libkfd/libkfd/info|g' build.sh
+      - name: Fix kfd objc
+        run: |
+          cd src
+          python3 -c "s=open('build.sh').read();s=s.replace('-c kcore/kfd/','-x objective-c -c kcore/kfd/');s=s.replace('-x objective-c -x objective-c','-x objective-c');open('build.sh','w').write(s);import re;print('\n'.join([l for l in s.split('\n') if 'kfd' in l][:12]))"
       - name: Fix headers
         run: |
           cd src
