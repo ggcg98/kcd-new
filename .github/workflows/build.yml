@@ -32,7 +32,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ${{ env.TC }}
-          key: kcd-tc-${{ env.SDK_VER }}-v13
+          key: kcd-tc-${{ env.SDK_VER }}-v14
 
       - name: Install toolchain
         if: steps.tc.outputs.cache-hit != 'true'
@@ -97,7 +97,6 @@ jobs:
         run: |
           set -e
           S="$TC/theos/sdks/iPhoneOS16.5.sdk"
-          echo "SDK = $S"
           echo 'int main(void){return 0;}' > /tmp/t.c
           clang -target arm64-apple-ios15.0 -isysroot "$S" -c /tmp/t.c -o /tmp/t.o
           file /tmp/t.o
@@ -132,11 +131,10 @@ jobs:
       - name: Fix headers
         run: |
           cd src
-          python3 -c "p='kcore/kern.m';s=open(p).read();s=s.replace('#include <libproc.h>','#include <sys/syslimits.h>\n#define PROC_ALL_PIDS 1\nextern int proc_listpids(unsigned int, unsigned int, void *, int);\nextern int proc_pidpath(int, void *, unsigned int);');open(p,'w').write(s);print('libproc patched')"
-          python3 -c "p='tweak/Overlay.xm';s=open(p).read();s=s.replace('#include <sys/sysctl.h>','#include <unistd.h>\n#include <sys/sysctl.h>');open(p,'w').write(s);print('unistd patched')"
-          echo "---- check ----"
-          head -12 kcore/kern.m
-          grep -n 'unistd\|sysctl' tweak/Overlay.xm | head -5
+          python3 -c "p='kcore/kern.m';s=open(p).read();s=s.replace('#include <libproc.h>','#include <sys/syslimits.h>\n#define PROC_ALL_PIDS 1\nextern int proc_listpids(unsigned int, unsigned int, void *, int);\nextern int proc_pidpath(int, void *, unsigned int);');open(p,'w').write(s);print('libproc ok')"
+          python3 -c "p='tweak/Overlay.xm';s=open(p).read();s=s.replace('#include <sys/sysctl.h>','#include <unistd.h>\n#include <sys/sysctl.h>');s=s.replace('struct kinfo_proc *kp = malloc(sz);','struct kinfo_proc *kp = (struct kinfo_proc *)malloc(sz);');open(p,'w').write(s);print('overlay ok')"
+          grep -n 'kinfo_proc \*kp' tweak/Overlay.xm
+          grep -n 'unistd' tweak/Overlay.xm | head -2
 
       - name: Fix hook
         run: |
@@ -158,13 +156,15 @@ jobs:
             '    kcd_orig_adfl = (void (*)(id, SEL, id))method_getImplementation(m);' \
             '    method_setImplementation(m, (IMP)kcd_hook_adfl);' \
             '}' > /tmp/hook.txt
-          python3 -c "import re;p='tweak/Overlay.xm';s=open(p).read();h=open('/tmp/hook.txt').read();n=re.sub(r'%hook\s+SpringBoard.*?%end',h,s,flags=re.S);open(p,'w').write(n);print('hook replaced:',len(s),'->',len(n))"
+          python3 -c "import re;p='tweak/Overlay.xm';s=open(p).read();h=open('/tmp/hook.txt').read();n=re.sub(r'%hook\s+SpringBoard.*?%end',h,s,flags=re.S);open(p,'w').write(n);print('hook ok')"
 
       - name: Patch build.sh
         run: |
           cd src
           sed -i 's|-fuse-ld=ld64.lld|-fuse-ld=ld64.lld -Wl,-platform_version,ios,15.0,15.0|g' build.sh
-          grep -n 'fuse-ld' build.sh || true
+          sed -i 's|-c tweak/Overlay.mm|-x objective-c -c tweak/Overlay.mm|g' build.sh
+          echo "---- patched ----"
+          grep -n 'fuse-ld\|Overlay.mm' build.sh
 
       - name: Attach kfd
         continue-on-error: true
