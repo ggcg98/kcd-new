@@ -32,7 +32,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ${{ env.TC }}
-          key: kcd-tc-${{ env.SDK_VER }}-v14
+          key: kcd-tc-${{ env.SDK_VER }}-v15
 
       - name: Install toolchain
         if: steps.tc.outputs.cache-hit != 'true'
@@ -97,10 +97,11 @@ jobs:
         run: |
           set -e
           S="$TC/theos/sdks/iPhoneOS16.5.sdk"
+          LDP=$(cat "$TC/ld64_path.txt")
           echo 'int main(void){return 0;}' > /tmp/t.c
           clang -target arm64-apple-ios15.0 -isysroot "$S" -c /tmp/t.c -o /tmp/t.o
           file /tmp/t.o
-          clang -target arm64-apple-ios15.0 -isysroot "$S" /tmp/t.o -fuse-ld="$(cat "$TC/ld64_path.txt")" -Wl,-platform_version,ios,15.0,15.0 -o /tmp/t.out
+          clang -target arm64-apple-ios15.0 -isysroot "$S" /tmp/t.o -fuse-ld="$LDP" -Wl,-platform_version,ios,15.0,15.0 -o /tmp/t.out
           file /tmp/t.out
           echo "SMOKE OK"
 
@@ -133,8 +134,6 @@ jobs:
           cd src
           python3 -c "p='kcore/kern.m';s=open(p).read();s=s.replace('#include <libproc.h>','#include <sys/syslimits.h>\n#define PROC_ALL_PIDS 1\nextern int proc_listpids(unsigned int, unsigned int, void *, int);\nextern int proc_pidpath(int, void *, unsigned int);');open(p,'w').write(s);print('libproc ok')"
           python3 -c "p='tweak/Overlay.xm';s=open(p).read();s=s.replace('#include <sys/sysctl.h>','#include <unistd.h>\n#include <sys/sysctl.h>');s=s.replace('struct kinfo_proc *kp = malloc(sz);','struct kinfo_proc *kp = (struct kinfo_proc *)malloc(sz);');open(p,'w').write(s);print('overlay ok')"
-          grep -n 'kinfo_proc \*kp' tweak/Overlay.xm
-          grep -n 'unistd' tweak/Overlay.xm | head -2
 
       - name: Fix hook
         run: |
@@ -161,7 +160,9 @@ jobs:
       - name: Patch build.sh
         run: |
           cd src
-          sed -i 's|-fuse-ld=ld64.lld|-fuse-ld=ld64.lld -Wl,-platform_version,ios,15.0,15.0|g' build.sh
+          LDP=$(cat "$TC/ld64_path.txt")
+          echo "LDP = $LDP"
+          sed -i "s|-fuse-ld=ld64.lld|-fuse-ld=$LDP -Wl,-platform_version,ios,15.0,15.0|g" build.sh
           sed -i 's|-c tweak/Overlay.mm|-x objective-c -c tweak/Overlay.mm|g' build.sh
           echo "---- patched ----"
           grep -n 'fuse-ld\|Overlay.mm' build.sh
