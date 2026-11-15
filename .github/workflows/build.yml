@@ -3,22 +3,247 @@ on:
   push:
     paths-ignore: ['*.md']
   workflow_dispatch:
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
 jobs:
-  inspect:
+  build:
     runs-on: ubuntu-22.04
+    timeout-minutes: 30
+    env:
+      TC: ${{ github.workspace }}/.tc
     steps:
-      - run: |
-          git clone --depth 1 https://github.com/Odyssey-Team/Taurine.git /tmp/t || true
-          cd /tmp/t/Taurine/exploit/kfd || exit 1
-          echo "======== info.h ========"
-          cat libkfd/info.h || true
-          echo "======== info/static_info.h ========"
-          cat libkfd/info/static_info.h || true
-          echo "======== info/dynamic_info.h ========"
-          cat libkfd/info/dynamic_info.h || true
-          echo "======== common.h ========"
-          cat libkfd/common.h || true
-          echo "======== krkw.h ========"
-          cat libkfd/krkw.h || true
-          echo "======== grep phys ========"
-          grep -rn "phys\|PHYS" . | head -40 || true
+      - uses: actions/checkout@v4
+      - uses: actions/cache@v4
+        id: tc
+        with:
+          path: ${{ env.TC }}
+          key: kcd-tc-v16
+      - name: Install
+        if: steps.tc.outputs.cache-hit != 'true'
+        run: |
+          set -e
+          sudo apt-get update -qq
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq clang lld llvm make g++ pkg-config git perl dpkg curl xz-utils unzip libssl-dev binutils libplist-dev
+          LDP=""
+          for v in 14 15 16 13 12 11; do
+            if [ -x "/usr/lib/llvm-$v/bin/ld64.lld" ]; then LDP="/usr/lib/llvm-$v/bin/ld64.lld"; break; fi
+          done
+          [ -z "$LDP" ] && [ -x /usr/bin/ld64.lld ] && LDP=/usr/bin/ld64.lld
+          sudo ln -sf "$LDP" /usr/local/bin/ld64.lld
+          mkdir -p "$TC/theos/bin/lib/Logos" "$TC/theos/sdks"
+          echo "$LDP" > "$TC/ld64_path.txt"
+          printf '#!/bin/sh\ncat "$1"\n' > "$TC/theos/bin/logos.pl"
+          chmod +x "$TC/theos/bin/logos.pl"
+          printf 'package Logos::Util;\n1;\n' > "$TC/theos/bin/lib/Logos/Util.pm"
+          rm -rf /tmp/sdks
+          git clone --filter=blob:none --sparse https://github.com/theos/sdks.git /tmp/sdks
+          cd /tmp/sdks
+          git sparse-checkout set iPhoneOS16.5.sdk
+          mv iPhoneOS16.5.sdk "$TC/theos/sdks/"
+          rm -rf /tmp/ldid
+          git clone --depth 1 https://github.com/ProcursusTeam/ldid.git /tmp/ldid
+          cd /tmp/ldid
+          git submodule update --init
+          make -j4
+          cp ldid "$TC/ldid"
+      - name: Link
+        run: |
+          sudo mkdir -p /usr/local/bin
+          [ -f "$TC/ld64_path.txt" ] && sudo ln -sf "$(cat "$TC/ld64_path.txt")" /usr/local/bin/ld64.lld
+          sudo ln -sf "$TC/ldid" /usr/local/bin/ldid
+      - name: Clone kfd
+        run: |
+          set -e
+          rm -rf /tmp/t
+          git clone --depth 1 https://github.com/Odyssey-Team/Taurine.git /tmp/t
+          echo "==== kfd files ===="
+          ls -la /tmp/t/Taurine/exploit/kfd
+          ls -la /tmp/t/Taurine/exploit/kfd/libkfd | head -20
+      - name: Generate
+        run: |
+          bash setup.sh
+          find src -type f | wc -l
+      - name: Attach
+        run: |
+          set -e
+          SRC=/tmp/t/Taurine/exploit/kfd
+          rm -rf src/kcore/kfd
+          mkdir -p src/kcore/kfd/libkfd
+          cp -r "$SRC"/. src/kcore/kfd/libkfd/
+          find src/kcore/kfd -maxdepth 2 -type d
+          echo "m=$(find src/kcore/kfd -name '*.m' | wc -l) c=$(find src/kcore/kfd -name '*.c' | wc -l) h=$(find src/kcore/kfd -name '*.h' | wc -l)"
+      - name: Patch krw.h
+        run: |
+          cd src
+          python3 -c "p='kcore/krw.h';s=open(p).read();s=s.replace('extern int g_kfd_ready;','extern int g_kfd_ready;\nextern uint64_t g_physmap_base;\nextern uint64_t g_kernel_pmap;\nuint64_t kdetect_physmap(void);');open(p,'w').write(s);print('krw.h ok')"
+      - name: Write krw.c
+        run: |
+          cd src
+          printf '%s\n' \
+          '#include "krw.h"' \
+          '#include "offsets.h"' \
+          '#include <sys/utsname.h>' \
+          '#include <stdlib.h>' \
+          '#include <string.h>' \
+          '#include <stdio.h>' \
+          '' \
+          '#if __has_include(<libkfd.h>)' \
+          '#include <libkfd.h>' \
+          '#include <kfd_krw.h>' \
+          '#define HAVE_KFD 1' \
+          '#else' \
+          '#define HAVE_KFD 0' \
+          '#endif' \
+          '' \
+          'uint64_t g_kbase = 0;' \
+          'uint64_t g_kslide = 0;' \
+          'uint64_t g_kernel_pmap = 0;' \
+          'uint64_t g_physmap_base = 0;' \
+          'int g_kfd_ready = 0;' \
+          'static uint64_t g_h = 0;' \
+          '' \
+          '#if HAVE_KFD' \
+          '' \
+          'static int try_open(uint64_t puaf, uint64_t kr, uint64_t kw) {' \
+          '    uint64_t k = kopen(0x4000, puaf, kr, kw);' \
+          '    if (k) { g_h = k; return 1; }' \
+          '    return 0;' \
+          '}' \
+          '' \
+          'static int kfd_up(void) {' \
+          '    if (!try_open(puaf_landa, kread_sem_open, kwrite_sem_open) &&' \
+          '        !try_open(puaf_physpuppet, kread_sem_open, kwrite_sem_open) &&' \
+          '        !try_open(puaf_smith, kread_sem_open, kwrite_sem_open)) {' \
+          '        fprintf(stderr, "[kcd] kopen failed"); return -1;' \
+          '    }' \
+          '    struct kfd *kd = (struct kfd *)g_h;' \
+          '    g_kslide = kd->info.kernel.kernel_slide;' \
+          '    g_kbase = 0xFFFFFFF007004000ULL + g_kslide;' \
+          '    g_kernel_pmap = kd->info.kernel.kernel_pmap;' \
+          '    fprintf(stderr, "[kcd] ok slide=%llx pmap=%llx", g_kslide, g_kernel_pmap);' \
+          '    g_kfd_ready = 1;' \
+          '    return 0;' \
+          '}' \
+          '' \
+          'static int be_read(uint64_t a, void *b, size_t n) { kread_(g_h, a, b, n); return 0; }' \
+          'static int be_write(uint64_t a, const void *b, size_t n) { kwrite_(g_h, (void *)b, a, n); return 0; }' \
+          '' \
+          'static int be_pread(uint64_t pa, void *b, size_t n) {' \
+          '    if (!g_physmap_base) return -1;' \
+          '    kread_(g_h, g_physmap_base + pa, b, n);' \
+          '    return 0;' \
+          '}' \
+          'static int be_pwrite(uint64_t pa, const void *b, size_t n) { return -1; }' \
+          '' \
+          '#else' \
+          'static int kfd_up(void) { return -1; }' \
+          'static int be_read(uint64_t a, void *b, size_t n) { return -1; }' \
+          'static int be_write(uint64_t a, const void *b, size_t n) { return -1; }' \
+          'static int be_pread(uint64_t a, void *b, size_t n) { return -1; }' \
+          'static int be_pwrite(uint64_t a, const void *b, size_t n) { return -1; }' \
+          '#endif' \
+          '' \
+          'krw_backend_t be_kfd = { "kfd", kfd_up, be_read, be_write, be_pread, be_pwrite };' \
+          '' \
+          'int rw_up(void) { return be_kfd.init() == 0 ? 0 : -1; }' \
+          '' \
+          'int rw_alive(void) {' \
+          '    if (!g_kfd_ready) return -1;' \
+          '    uint32_t m = 0;' \
+          '    if (be_read(g_kbase, &m, 4) != 0) return -1;' \
+          '    return m == 0xFEEDFACF ? 0 : -1;' \
+          '}' \
+          '' \
+          'uint64_t kdetect_physmap(void) {' \
+          '    if (!g_kernel_pmap) return 0;' \
+          '    uint64_t ttep = 0;' \
+          '    be_read(g_kernel_pmap + OFF_PMAP_TTEP, &ttep, 8);' \
+          '    ttep &= 0x0000FFFFFFFFF000ULL;' \
+          '    if (!ttep) return 0;' \
+          '    for (int i = 0; i < 512; i++) {' \
+          '        uint64_t e = 0;' \
+          '        be_read(ttep + (uint64_t)i * 8, &e, 8);' \
+          '        if ((e & 3) != 3) continue;' \
+          '        uint64_t pa = e & 0x0000FFFFFFE00000ULL;' \
+          '        if (pa == 0) {' \
+          '            uint64_t va = 0xfffffff000000000ULL + ((uint64_t)i << 30);' \
+          '            fprintf(stderr, "[kcd] physmap=%llx", va);' \
+          '            return va;' \
+          '        }' \
+          '    }' \
+          '    return 0;' \
+          '}' \
+          '' \
+          'int kread_buf(uint64_t a, void *b, size_t n) { return be_kfd.kread(a, b, n); }' \
+          'int kwrite_buf(uint64_t a, const void *b, size_t n) { return be_kfd.kwrite(a, b, n); }' \
+          'uint64_t r64(uint64_t a) { uint64_t v = 0; be_kfd.kread(a, &v, 8); return v; }' \
+          'uint32_t r32(uint64_t a) { uint32_t v = 0; be_kfd.kread(a, &v, 4); return v; }' \
+          'float rf32(uint64_t a) { float v = 0; be_kfd.kread(a, &v, 4); return v; }' \
+          'void w64(uint64_t a, uint64_t v) { be_kfd.kwrite(a, &v, 8); }' \
+          'void w32(uint64_t a, uint32_t v) { be_kfd.kwrite(a, &v, 4); }' \
+          'uint64_t kread_ptr(uint64_t a) { uint64_t v = 0; be_kfd.kread(a, &v, 8); return PAC_STRIP(v); }' \
+          > kcore/krw.c
+          echo "krw.c lines: $(wc -l < kcore/krw.c)"
+      - name: Patch Overlay
+        run: |
+          cd src
+          python3 -c "p='tweak/Overlay.xm';s=open(p).read();s=s.replace('if (rw_up() != 0) return NULL;','if (rw_up() != 0) return NULL;\n    g_physmap_base = kdetect_physmap();');open(p,'w').write(s);print('overlay ok')"
+      - name: Fix ext
+        run: |
+          cd src
+          [ -f kcore/koffsets.c ] && mv kcore/koffsets.c kcore/koffsets.m
+          [ -f game/ue4_offsets.c ] && mv game/ue4_offsets.c game/ue4_offsets.m
+          sed -i 's|kcore/koffsets\.c|kcore/koffsets.m|g' build.sh
+          sed -i 's|game/ue4_offsets\.c|game/ue4_offsets.m|g' build.sh
+          sed -i 's|kcore/kfd/libkfd/\*\.c kcore/kfd/libkfd/\*\.m|$(find kcore/kfd/libkfd -name "*.c" -o -name "*.m")|g' build.sh
+          sed -i 's|-Ikcore/kfd -Ikcore/kfd/libkfd|-Ikcore/kfd -Ikcore/kfd/libkfd -Ikcore/kfd/libkfd/libkfd -Ikcore/kfd/libkfd/libkfd/info -Ikcore/kfd/libkfd/libkfd/krkw -Ikcore/kfd/libkfd/libkfd/puaf|g' build.sh
+      - name: Fix headers
+        run: |
+          cd src
+          python3 -c "p='kcore/kern.m';s=open(p).read();s=s.replace('#include <libproc.h>','#include <sys/syslimits.h>\n#define PROC_ALL_PIDS 1\nextern int proc_listpids(unsigned int, unsigned int, void *, int);\nextern int proc_pidpath(int, void *, unsigned int);');open(p,'w').write(s)"
+          python3 -c "p='tweak/Overlay.xm';s=open(p).read();s=s.replace('#include <sys/sysctl.h>','#include <unistd.h>\n#include <sys/sysctl.h>');s=s.replace('struct kinfo_proc *kp = malloc(sz);','struct kinfo_proc *kp = (struct kinfo_proc *)malloc(sz);');open(p,'w').write(s)"
+      - name: Fix hook
+        run: |
+          cd src
+          printf '%s\n' \
+            '#include <objc/runtime.h>' \
+            'static void (*kcd_orig_adfl)(id, SEL, id) = 0;' \
+            'static void kcd_hook_adfl(id self, SEL _cmd, id a) {' \
+            '    if (kcd_orig_adfl) kcd_orig_adfl(self, _cmd, a);' \
+            '    load_cfg();' \
+            '    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ make_window(); });' \
+            '    dispatch_async(dispatch_get_global_queue(0, 0), ^{ scan_loop(NULL); });' \
+            '}' \
+            '__attribute__((constructor)) static void kcd_install_hook(void) {' \
+            '    Class c = objc_getClass("SpringBoard");' \
+            '    if (!c) return;' \
+            '    Method m = class_getInstanceMethod(c, @selector(applicationDidFinishLaunching:));' \
+            '    if (!m) return;' \
+            '    kcd_orig_adfl = (void (*)(id, SEL, id))method_getImplementation(m);' \
+            '    method_setImplementation(m, (IMP)kcd_hook_adfl);' \
+            '}' > /tmp/hook.txt
+          python3 -c "import re;p='tweak/Overlay.xm';s=open(p).read();h=open('/tmp/hook.txt').read();n=re.sub(r'%hook\s+SpringBoard.*?%end',h,s,flags=re.S);open(p,'w').write(n)"
+      - name: Patch link
+        run: |
+          cd src
+          LDP=$(cat "$TC/ld64_path.txt")
+          sed -i "s|-fuse-ld=ld64.lld|-fuse-ld=$LDP -Wl,-platform_version,ios,15.0,15.0|g" build.sh
+          sed -i 's|-c tweak/Overlay.mm|-x objective-c -c tweak/Overlay.mm|g' build.sh
+          sed -i 's|-framework UIKit|-framework UIKit -framework CoreGraphics -framework CoreText -framework CoreImage|g' build.sh
+      - name: Build
+        run: |
+          cd src
+          export THEOS="$TC/theos" PATH="/usr/local/bin:$TC:$PATH" AR=ar
+          bash build.sh
+      - name: Collect
+        run: |
+          mkdir -p dist
+          cp src/release/*.deb dist/ || true
+          ls -lh dist/ || true
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: KCD-deb
+          path: dist/*.deb
+          if-no-files-found: warn
