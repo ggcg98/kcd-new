@@ -5,19 +5,22 @@ jobs:
   diag:
     runs-on: ubuntu-22.04
     steps:
-      - name: dump
-        run: |
-          git clone --recursive https://github.com/felix-pb/kfd.git /tmp/kfd
+      - run: |
+          git clone https://github.com/felix-pb/kfd.git /tmp/kfd
           cd /tmp/kfd
-          echo "======== ALL FILES ========"
-          find . -type f -not -path './.git/*' | sort
-          echo "======== .c COUNT ========"
-          find . -name '*.c' | wc -l
-          echo "======== .c LIST ========"
-          find . -name '*.c' | head -40
-          echo "======== .m COUNT ========"
-          find . -name '*.m' | wc -l
-          echo "======== GITMODULES ========"
-          cat .gitmodules 2>/dev/null || echo "none"
-          echo "======== libkfd.h HEAD ========"
-          head -60 kfd/libkfd.h
+          echo "==== BRANCHES ===="
+          git branch -a
+          echo "==== TOTAL TRACKED FILES ===="
+          git ls-files | wc -l
+          echo "==== .c COUNT ===="
+          git ls-files | grep -c '\.c$' || echo 0
+          echo "==== .c LIST ===="
+          git ls-files | grep '\.c$' | head -40
+          echo "==== .h LIST ===="
+          git ls-files | grep '\.h$' | head -40
+          echo "==== ROOT FILES ===="
+          git ls-files | grep -v '/' | head -20
+          echo "==== libkfd.h FIRST 80 ===="
+          sed -n '1,80p' kfd/libkfd.h
+          echo "==== kfd.h IN HISTORY ===="
+          git log --all --oneline -- '*kfd.h' | head -5
