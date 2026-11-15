@@ -3,73 +3,18 @@ on:
   push:
     paths-ignore: ['*.md']
   workflow_dispatch:
-concurrency:
-  group: build-${{ github.ref }}
-  cancel-in-progress: true
 jobs:
-  build:
+  inspect:
     runs-on: ubuntu-22.04
-    timeout-minutes: 30
-    env:
-      TC: ${{ github.workspace }}/.tc
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/cache@v4
-        id: tc
-        with:
-          path: ${{ env.TC }}
-          key: kcd-tc-v16
-      - name: Install
-        if: steps.tc.outputs.cache-hit != 'true'
-        run: |
-          set -e
-          sudo apt-get update -qq
-          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq clang lld llvm make g++ pkg-config git perl dpkg curl xz-utils unzip libssl-dev binutils libplist-dev
-          LDP=""
-          for v in 14 15 16 13 12 11; do
-            if [ -x "/usr/lib/llvm-$v/bin/ld64.lld" ]; then LDP="/usr/lib/llvm-$v/bin/ld64.lld"; break; fi
-          done
-          [ -z "$LDP" ] && [ -x /usr/bin/ld64.lld ] && LDP=/usr/bin/ld64.lld
-          sudo ln -sf "$LDP" /usr/local/bin/ld64.lld
-          mkdir -p "$TC/theos/bin/lib/Logos" "$TC/theos/sdks"
-          echo "$LDP" > "$TC/ld64_path.txt"
-          printf '#!/bin/sh\ncat "$1"\n' > "$TC/theos/bin/logos.pl"
-          chmod +x "$TC/theos/bin/logos.pl"
-          printf 'package Logos::Util;\n1;\n' > "$TC/theos/bin/lib/Logos/Util.pm"
-          rm -rf /tmp/sdks
-          git clone --filter=blob:none --sparse https://github.com/theos/sdks.git /tmp/sdks
-          cd /tmp/sdks
-          git sparse-checkout set iPhoneOS16.5.sdk
-          mv iPhoneOS16.5.sdk "$TC/theos/sdks/"
-          rm -rf /tmp/ldid
-          git clone --depth 1 https://github.com/ProcursusTeam/ldid.git /tmp/ldid
-          cd /tmp/ldid
-          git submodule update --init
-          make -j4
-          cp ldid "$TC/ldid"
-      - name: Link
-        run: |
-          sudo mkdir -p /usr/local/bin
-          [ -f "$TC/ld64_path.txt" ] && sudo ln -sf "$(cat "$TC/ld64_path.txt")" /usr/local/bin/ld64.lld
-          sudo ln -sf "$TC/ldid" /usr/local/bin/ldid
-      - name: Inspect kfd
-        run: |
-          rm -rf /tmp/t
+      - run: |
           git clone --depth 1 https://github.com/Odyssey-Team/Taurine.git /tmp/t
           cd /tmp/t/Taurine/exploit/kfd
-          echo "==== FILES ===="
-          ls -la
-          echo "==== LINE COUNTS ===="
-          wc -l *.h
-          echo "==== kfd_krw.h HEAD 50 ===="
-          head -50 kfd_krw.h
-          echo "==== kfd_krw.h FUNC BODIES ===="
-          grep -n '^[a-zA-Z_].*(' kfd_krw.h | head -20
-          echo "==== libkfd.h INCLUDES ===="
-          grep -n '#include' libkfd.h
-          echo "==== libkfd.h TAIL 25 ===="
-          tail -25 libkfd.h
-      - name: Stop
-        run: |
-          echo "==== INSPECT ONLY - no build ===="
-          exit 0
+          echo "======== kfd_krw.m FULL ========"
+          cat kfd_krw.m
+          echo "======== common.h struct kfd ========"
+          grep -n -A 40 "struct kfd {" libkfd/common.h
+          echo "======== krkw.h FULL ========"
+          cat libkfd/krkw.h
+          echo "======== grep phys ========"
+          grep -rn "phys\|PHYS\|kread_phys\|phystokv\|gPhysBase\|gVirtBase" . | head -30
