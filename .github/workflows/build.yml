@@ -77,8 +77,10 @@ jobs:
       - name: Diag
         run: |
           cd src
-          echo "=== kfd refs ==="
-          grep -n "kfd\|CFLAGS\|stub" build.sh | head -25 || true
+          echo "=== stub ctx ==="
+          grep -n -B3 -A8 "stub" build.sh | head -22 || true
+          echo "=== krw ctx ==="
+          grep -n "krw" build.sh | head -8 || true
       - name: Patch krw.h
         run: |
           cd src
@@ -215,10 +217,22 @@ jobs:
           sed -i 's|kcore/kfd/libkfd/\*\.c|kcore/kfd/*.c|g' build.sh
           sed -i 's|kcore/kfd/libkfd/\*\.m|kcore/kfd/*.m|g' build.sh
           sed -i 's|-Ikcore/kfd/kfd|-Ikcore/kfd -Ikcore/kfd/libkfd -Ikcore/kfd/libkfd/libkfd|g' build.sh
-      - name: Fix kfd objc
+      - name: Kill available
         run: |
           cd src
-          python3 -c "s=open('build.sh').read();s=s.replace('-c kcore/kfd/','-x objective-c -c kcore/kfd/');s=s.replace('-x objective-c -x objective-c','-x objective-c');open('build.sh','w').write(s);import re;print('\n'.join([l for l in s.split('\n') if 'kfd' in l][:12]))"
+          python3 -c "import re,os
+          for r,_,fs in os.walk('kcore/kfd'):
+            for f in fs:
+              if f.endswith(('.h','.c','.m')):
+                p=os.path.join(r,f)
+                s=open(p,errors='ignore').read()
+                s=re.sub(r'@available\(iOS 16(\.0)?, \*\)','1',s)
+                s=re.sub(r'@available\([^)]*\)','0',s)
+                open(p,'w').write(s)
+          print('available killed')"
+          grep -rn "@available" kcore/kfd | head -5 || true
+          echo "--- mode ---"
+          grep -n "krw" build.sh | head -6 || true
       - name: Fix headers
         run: |
           cd src
