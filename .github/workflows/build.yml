@@ -42,22 +42,28 @@ jobs:
           mv src/kcore/koffsets.c src/kcore/koffsets.m
           mv src/game/ue4_offsets.c src/game/ue4_offsets.m
           
-          # 2. 修复所有脚本里写死的旧文件名
+          # 2. 修复脚本里写死的旧文件名
           sed -i 's/kcore\/koffsets.c/kcore\/koffsets.m/g' src/verify.sh
           sed -i 's/game\/ue4_offsets.c/game\/ue4_offsets.m/g' src/verify.sh
           sed -i 's/kcore\/koffsets.c/kcore\/koffsets.m/g' src/build.sh
           sed -i 's/game\/ue4_offsets.c/game\/ue4_offsets.m/g' src/build.sh
           
-          # 3. 造一个完整的假 libproc.h，加上缺失的 PROC_ALL_PIDS
+          # 3. 造一个终极版假 libproc.h，把缺失的宏全补上
           cat > src/kcore/libproc.h <<'EOF'
           #pragma once
           #include <sys/types.h>
+          #include <limits.h>
+          #ifndef PATH_MAX
+          #define PATH_MAX 1024
+          #endif
+          #ifndef PROC_ALL_PIDS
           #define PROC_ALL_PIDS 1
+          #endif
           int proc_listpids(int type, unsigned int typeinfo, void *buffer, int buffersize);
           int proc_pidpath(int pid, void *buffer, unsigned int buffersize);
           EOF
           
-          # 4. 强制链接器忽略 Linux 上缺失的苹果专有符号
+          # 4. 强制链接器忽略 Linux 上缺失的苹果专有符号（保证链接通过）
           sed -i 's/-shared/-shared -Wl,-undefined,dynamic_lookup/g' src/build.sh
 
       - name: Build
