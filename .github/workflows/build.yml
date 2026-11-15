@@ -12,7 +12,7 @@ jobs:
       - name: Install Dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y git make clang lld dpkg libssl-dev libplist-dev libxml2-dev libz-dev || true
+          sudo apt-get install -y git make clang lld dpkg libssl-dev libplist-dev libxml2-dev libz-dev curl || true
           sudo apt-get install -y ldid || true
 
       - name: Setup Theos
@@ -48,7 +48,7 @@ jobs:
           sed -i 's/kcore\/koffsets.c/kcore\/koffsets.m/g' src/build.sh
           sed -i 's/game\/ue4_offsets.c/game\/ue4_offsets.m/g' src/build.sh
           
-          # 3. 造一个终极版假 libproc.h，把缺失的宏全补上
+          # 3. 伪造 libproc.h
           cat > src/kcore/libproc.h <<'EOF'
           #pragma once
           #include <sys/types.h>
@@ -63,7 +63,16 @@ jobs:
           int proc_pidpath(int pid, void *buffer, unsigned int buffersize);
           EOF
           
-          # 4. 强制链接器忽略 Linux 上缺失的苹果专有符号（保证链接通过）
+          # 4. 修复 Overlay.xm 的强转报错
+          sed -i 's/struct kinfo_proc \*kp = malloc(sz);/struct kinfo_proc *kp = (struct kinfo_proc *)malloc(sz);/g' src/tweak/Overlay.xm
+          
+          # 5. 下载缺失的 substrate.h 头文件
+          curl -sL https://raw.githubusercontent.com/theos/headers/master/substrate.h -o src/tweak/substrate.h
+          
+          # 6. 让编译器找得到 tweak 目录下的头文件
+          sed -i 's/I="-Ikcore/I="-Itweak -I. -Ikcore/' src/build.sh
+          
+          # 7. 忽略 Linux 缺失的符号
           sed -i 's/-shared/-shared -Wl,-undefined,dynamic_lookup/g' src/build.sh
 
       - name: Build
