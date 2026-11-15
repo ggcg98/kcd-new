@@ -8,13 +8,17 @@ jobs:
     runs-on: ubuntu-22.04
     steps:
       - run: |
-          git clone --depth 1 https://github.com/Odyssey-Team/Taurine.git /tmp/t
-          cd /tmp/t/Taurine/exploit/kfd
-          echo "======== kfd_krw.m FULL ========"
-          cat kfd_krw.m
-          echo "======== common.h struct kfd ========"
-          grep -n -A 40 "struct kfd {" libkfd/common.h
-          echo "======== krkw.h FULL ========"
-          cat libkfd/krkw.h
+          git clone --depth 1 https://github.com/Odyssey-Team/Taurine.git /tmp/t || true
+          cd /tmp/t/Taurine/exploit/kfd || exit 1
+          echo "======== info.h ========"
+          cat libkfd/info.h || true
+          echo "======== info/static_info.h ========"
+          cat libkfd/info/static_info.h || true
+          echo "======== info/dynamic_info.h ========"
+          cat libkfd/info/dynamic_info.h || true
+          echo "======== common.h ========"
+          cat libkfd/common.h || true
+          echo "======== krkw.h ========"
+          cat libkfd/krkw.h || true
           echo "======== grep phys ========"
-          grep -rn "phys\|PHYS\|kread_phys\|phystokv\|gPhysBase\|gVirtBase" . | head -30
+          grep -rn "phys\|PHYS" . | head -40 || true
