@@ -14,6 +14,8 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y git make clang lld dpkg libssl-dev libplist-dev libxml2-dev libz-dev curl || true
           sudo apt-get install -y ldid || true
+          # 显式安装 Linux 下的 Objective-C 运行时库
+          sudo apt-get install -y libobjc-11-dev libobjc4 || sudo apt-get install -y gobjc || true
 
       - name: Setup Theos
         run: |
@@ -38,17 +40,14 @@ jobs:
             rm -rf src/kcore/kfd && cp -r /tmp/kfd src/kcore/kfd
           fi
           
-          # 1. 自动把包含 OC 代码的 .c 改成 .m
-          mv src/kcore/koffsets.c src/kcore/koffsets.m
-          mv src/game/ue4_offsets.c src/game/ue4_offsets.m
+          # 1. 自动改名并修复旧文件名
+          mv src/kcore/koffsets.c src/kcore/koffsets.m 2>/dev/null || true
+          mv src/game/ue4_offsets.c src/game/ue4_offsets.m 2>/dev/null || true
           
-          # 2. 修复脚本里写死的旧文件名
-          sed -i 's/kcore\/koffsets.c/kcore\/koffsets.m/g' src/verify.sh
-          sed -i 's/game\/ue4_offsets.c/game\/ue4_offsets.m/g' src/verify.sh
-          sed -i 's/kcore\/koffsets.c/kcore\/koffsets.m/g' src/build.sh
-          sed -i 's/game\/ue4_offsets.c/game\/ue4_offsets.m/g' src/build.sh
+          sed -i 's/kcore\/koffsets.c/kcore\/koffsets.m/g' src/verify.sh src/build.sh 2>/dev/null || true
+          sed -i 's/game\/ue4_offsets.c/game\/ue4_offsets.m/g' src/verify.sh src/build.sh 2>/dev/null || true
           
-          # 3. 伪造 libproc.h
+          # 2. 伪造系统底层声明头文件
           cat > src/kcore/libproc.h <<'EOF'
           #pragma once
           #include <sys/types.h>
@@ -62,18 +61,24 @@ jobs:
           int proc_listpids(int type, unsigned int typeinfo, void *buffer, int buffersize);
           int proc_pidpath(int pid, void *buffer, unsigned int buffersize);
           EOF
-          
-          # 4. 修复 Overlay.xm 的强转报错
+
+          # 3. 修复 Overlay.xm 中的类型转换与缺失声明
           sed -i 's/struct kinfo_proc \*kp = malloc(sz);/struct kinfo_proc *kp = (struct kinfo_proc *)malloc(sz);/g' src/tweak/Overlay.xm
           
-          # 5. 下载缺失的 substrate.h 头文件
-          curl -sL https://raw.githubusercontent.com/theos/headers/master/substrate.h -o src/tweak/substrate.h
-          
-          # 6. 让编译器找得到 tweak 目录下的头文件
-          sed -i 's/I="-Ikcore/I="-Itweak -I. -Ikcore/' src/build.sh
-          
-          # 7. 忽略 Linux 缺失的符号
-          sed -i 's/-shared/-shared -Wl,-undefined,dynamic_lookup/g' src/build.sh
+          # 4. 补全完整的 substrate 头文件与 Objective-C 运行时声明
+          cat > src/tweak/substrate.h <<'EOF'
+          #ifndef SUBSTRATE_H
+          #define SUBSTRATE_H
+          #include <objc/runtime.h>
+          #include <objc/message.h>
+          typedef void *MSHookFunction(void *symbol, void *replace, void **result);
+          void MSHookMessageEx(Class _class, SEL sel, IMP imp, IMP *result);
+          #endif
+          EOF
+
+          # 5. 修补编译参数：补全包含路径，并为链接器追加 -lobjc 运行时库
+          sed -i 's/I="-Ikcore/I="-Itweak -I. -Ikcore/g' src/build.sh
+          sed -i 's/-shared -Wl,-undefined,dynamic_lookup/-shared -lobjc -Wl,-undefined,dynamic_lookup/g' src/build.sh
 
       - name: Build
         run: |
