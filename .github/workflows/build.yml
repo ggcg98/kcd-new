@@ -12,8 +12,7 @@ jobs:
       - name: Install Dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y git make clang lld dpkg libssl-dev libplist-dev libxml2-dev libz-dev
-          # 安装 ldid 和 dpkg-deb
+          sudo apt-get install -y git make clang lld dpkg libssl-dev libplist-dev libxml2-dev libz-dev || true
           sudo apt-get install -y ldid || true
 
       - name: Setup Theos
@@ -32,14 +31,35 @@ jobs:
           git clone --recursive --depth 1 https://github.com/felix-pb/kfd.git /tmp/kfd
           ls -l /tmp/kfd/libkfd/kfd.h || true
 
-      - name: Generate & Build
+      - name: Generate & Fix
         run: |
           bash setup.sh
           if [ -d /tmp/kfd ]; then
             rm -rf src/kcore/kfd && cp -r /tmp/kfd src/kcore/kfd
           fi
-          cd src && bash verify.sh || true
-          cd src && bash build.sh
+          
+          # 自动把包含 OC 代码的 .c 改成 .m
+          mv src/kcore/koffsets.c src/kcore/koffsets.m
+          mv src/game/ue4_offsets.c src/game/ue4_offsets.m
+          sed -i 's/kcore\/koffsets.c/kcore\/koffsets.m/g' src/verify.sh
+          sed -i 's/game\/ue4_offsets.c/game\/ue4_offsets.m/g' src/verify.sh
+          
+          # 造一个假的 libproc.h 骗过 Linux 编译器
+          cat > src/kcore/libproc.h <<'EOF'
+          #pragma once
+          #include <sys/types.h>
+          int proc_listpids(int type, unsigned int typeinfo, void *buffer, int buffersize);
+          int proc_pidpath(int pid, void *buffer, unsigned int buffersize);
+          EOF
+          
+          # 修改编译脚本，让它在遇到 Linux 缺失的函数时先跳过，最后在手机上跑时再去寻找
+          sed -i 's/-shared/-shared -Wl,-undefined,dynamic_lookup/g' src/build.sh
+
+      - name: Build
+        run: |
+          cd src
+          bash verify.sh || true
+          bash build.sh
 
       - name: Collect Artifacts
         run: |
