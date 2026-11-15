@@ -32,50 +32,73 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ${{ env.TC }}
-          key: kcd-tc-${{ env.SDK_VER }}-v3
+          key: kcd-tc-${{ env.SDK_VER }}-v5
 
       - name: Install toolchain
         if: steps.tc.outputs.cache-hit != 'true'
         run: |
           set -e
-          echo "== apt =="
+          echo "==== apt ===="
           sudo apt-get update -qq
           sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq \
             clang lld llvm make git perl dpkg curl xz-utils libssl-dev binutils
 
-          echo "== find ld64.lld =="
-          ls /usr/lib/llvm-*/bin/ 2>/dev/null | grep -i 'ld' || true
-          LDP=$(find /usr/lib/llvm-* /usr/bin -name 'ld64.lld' -type f 2>/dev/null | head -1)
-          if [ -z "$LDP" ]; then
-            sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq lld-14 llvm-14 || true
-            LDP=$(find /usr/lib/llvm-14 /usr/bin -name 'ld64.lld' -type f 2>/dev/null | head -1)
+          echo "==== ld64.lld ===="
+          LDP=""
+          for v in 14 15 16 13 12 11; do
+            if [ -x "/usr/lib/llvm-$v/bin/ld64.lld" ]; then
+              LDP="/usr/lib/llvm-$v/bin/ld64.lld"
+              break
+            fi
+          done
+          if [ -z "$LDP" ] && [ -x /usr/bin/ld64.lld ]; then
+            LDP=/usr/bin/ld64.lld
           fi
           echo "LD64 = $LDP"
-          [ -n "$LDP" ] || { echo "FATAL: no ld64.lld"; exit 1; }
+          [ -n "$LDP" ] || { echo "FATAL: ld64.lld not found"; exit 1; }
           sudo mkdir -p /usr/local/bin
           sudo ln -sf "$LDP" /usr/local/bin/ld64.lld
 
-          echo "== theos =="
+          echo "==== theos ===="
           mkdir -p "$TC"
           echo "$LDP" > "$TC/ld64_path.txt"
-          git clone --depth 1 https://github.com/theos/theos.git "$TC/theos"
-          chmod +x "$TC/theos/bin/logos.pl"
+          git clone --recursive --depth 1 https://github.com/theos/theos.git "$TC/theos"
 
-          echo "== sdk =="
+          echo "==== logos.pl ===="
+          ls -l "$TC/theos/bin/logos.pl" || true
+          REAL=$(find "$TC/theos" -name 'logos.pl' -type f 2>/dev/null | head -1)
+          if [ -z "$REAL" ]; then
+            TARGET=$(readlink -f "$TC/theos/bin/logos.pl" 2>/dev/null || true)
+            [ -n "$TARGET" ] && [ -f "$TARGET" ] && REAL="$TARGET"
+          fi
+          echo "REAL = $REAL"
+          if [ -n "$REAL" ] && [ -f "$REAL" ]; then
+            rm -f "$TC/theos/bin/logos.pl"
+            cp "$REAL" "$TC/theos/bin/logos.pl"
+            chmod +x "$TC/theos/bin/logos.pl"
+            echo "$TC/theos/bin/logos.pl" > "$TC/logos_path.txt"
+          else
+            echo "FATAL: logos.pl not resolvable"
+            exit 1
+          fi
+          perl "$TC/theos/bin/logos.pl" 2>&1 | head -3 || true
+          ls -l "$TC/theos/bin/logos.pl"
+
+          echo "==== sdk ===="
           git clone --filter=blob:none --sparse https://github.com/theos/sdks.git /tmp/sdks
           cd /tmp/sdks
           git sparse-checkout set "$SDK_VER"
           mv "$SDK_VER" "$TC/sdk"
           ls "$TC/sdk/System/Library/Frameworks" | head -5
 
-          echo "== ldid =="
+          echo "==== ldid ===="
           git clone --depth 1 https://github.com/ProcursusTeam/ldid.git /tmp/ldid
           cd /tmp/ldid
           git submodule update --init
           make -j4
           cp ldid "$TC/ldid"
 
-          echo "== ready =="
+          echo "==== ready ===="
           du -sh "$TC"
 
       - name: Link toolchain
@@ -84,19 +107,36 @@ jobs:
           sudo mkdir -p /usr/local/bin
           [ -f "$TC/ld64_path.txt" ] && sudo ln -sf "$(cat "$TC/ld64_path.txt")" /usr/local/bin/ld64.lld
           sudo ln -sf "$TC/ldid" /usr/local/bin/ldid
-          echo "ldid -> $(which ldid)"
+          echo "ld64  -> $(cat "$TC/ld64_path.txt" 2>/dev/null)"
+          echo "ldid  -> $(which ldid)"
+          echo "logos -> $(ls -l "$TC/theos/bin/logos.pl" 2>/dev/null)"
           ls "$TC/sdk/System/Library/Frameworks" | head -3
 
       - name: Smoke test
         run: |
           set -e
           export SDK_PATH="$TC/sdk"
+
+          echo "==== compile ===="
           echo 'int main(void){return 0;}' > /tmp/t.c
           clang -target arm64-apple-ios15.0 -isysroot "$SDK_PATH" -c /tmp/t.c -o /tmp/t.o
           file /tmp/t.o
+
+          echo "==== link ===="
           clang -target arm64-apple-ios15.0 -isysroot "$SDK_PATH" /tmp/t.o \
             -fuse-ld="$(cat "$TC/ld64_path.txt")" -o /tmp/t.out
           file /tmp/t.out
+
+          echo "==== logos ===="
+          cat > /tmp/x.xm <<'EOF'
+%hook NSObject
+- (id)description { return %orig; }
+%end
+EOF
+          perl "$TC/theos/bin/logos.pl" /tmp/x.xm > /tmp/x.mm
+          wc -l /tmp/x.mm
+          head -6 /tmp/x.mm
+
           echo "SMOKE OK"
 
       - name: Import kfd
@@ -110,16 +150,62 @@ jobs:
           fi
           ls -l /tmp/kfd/libkfd/kfd.h || echo "kfd missing"
 
-      - name: Generate
+      - name: Generate sources
         run: |
           bash setup.sh
+          echo "---- count ----"
           find src -type f | wc -l
+
+      - name: Patch build.sh
+        run: |
+          cd src
+          python3 - <<'PY'
+          import os
+          p = 'build.sh'
+          s = open(p).read()
+
+          if 'LOGOS=' not in s:
+              s = s.replace(
+                  '"$T/bin/logos.pl" tweak/Overlay.xm > tweak/Overlay.mm',
+                  'LOGOS="${LOGOS_PL:-$T/bin/logos.pl}"\n'
+                  'if [ ! -f "$LOGOS" ]; then LOGOS=`find "$T" -name logos.pl -type f 2>/dev/null | head -1`; fi\n'
+                  'if [ -z "$LOGOS" ]; then echo "FATAL: no logos"; exit 1; fi\n'
+                  'perl "$LOGOS" tweak/Overlay.xm > tweak/Overlay.mm\n'
+                  'if [ ! -s tweak/Overlay.mm ]; then echo "FATAL: empty mm"; exit 1; fi'
+              )
+
+          if 'LD64_PATH' not in s:
+              s = s.replace(
+                  'case "$(uname -s)" in\n    Darwin) LDOPT="" ;;\n    *)      LDOPT="-fuse-ld=ld64.lld" ;;\nesac',
+                  'if [ -n "$LD64_PATH" ] && [ -x "$LD64_PATH" ]; then\n'
+                  '  LDOPT="-fuse-ld=$LD64_PATH"\n'
+                  'elif [ "$(uname -s)" = "Darwin" ]; then\n'
+                  '  LDOPT=""\n'
+                  'else\n'
+                  '  LDOPT="-fuse-ld=ld64.lld"\n'
+                  'fi'
+              )
+
+          if 'SDK_PATH' not in s:
+              s = s.replace(
+                  'SDK="$T/sdks/iPhoneOS16.5.sdk"',
+                  'if [ -n "$SDK_PATH" ]; then SDK="$SDK_PATH"; else SDK="$T/sdks/iPhoneOS16.5.sdk"; fi'
+              )
+
+          if '${AR:-ar}' not in s:
+              s = s.replace('ar rcs libkfd.a', '${AR:-ar} rcs libkfd.a')
+
+          open(p, 'w').write(s)
+          print("patched")
+          PY
+          grep -n 'LOGOS=\|LD64_PATH\|SDK_PATH\|AR:-ar' build.sh | head -20
 
       - name: Attach kfd
         continue-on-error: true
         run: |
           if [ -d /tmp/kfd ]; then
-            rm -rf src/kcore/kfd && cp -r /tmp/kfd src/kcore/kfd
+            rm -rf src/kcore/kfd
+            cp -r /tmp/kfd src/kcore/kfd
             echo "kfd attached"
           fi
 
@@ -127,28 +213,38 @@ jobs:
         continue-on-error: true
         run: |
           cd src
-          export THEOS="$TC/theos" SDK_PATH="$TC/sdk" AR=llvm-ar PATH="$TC:$PATH"
+          export THEOS="$TC/theos"
+          export SDK_PATH="$TC/sdk"
+          export AR=llvm-ar
+          export PATH="$TC:/usr/local/bin:$PATH"
+          export LOGOS_PL="$TC/theos/bin/logos.pl"
           [ -f "$TC/ld64_path.txt" ] && export LD64_PATH="$(cat "$TC/ld64_path.txt")"
           bash verify.sh || true
 
       - name: Build
         run: |
           cd src
-          export THEOS="$TC/theos" SDK_PATH="$TC/sdk" AR=llvm-ar PATH="$TC:$PATH"
+          export THEOS="$TC/theos"
+          export SDK_PATH="$TC/sdk"
+          export AR=llvm-ar
+          export PATH="$TC:/usr/local/bin:$PATH"
+          export LOGOS_PL="$TC/theos/bin/logos.pl"
           [ -f "$TC/ld64_path.txt" ] && export LD64_PATH="$(cat "$TC/ld64_path.txt")"
           bash build.sh
 
       - name: Inspect
         if: always()
         run: |
+          echo "---- release ----"
           ls -lh src/release/ 2>/dev/null || true
+          echo "---- dylib ----"
           ls -lh src/tweak/*.dylib 2>/dev/null || true
           file src/tweak/*.dylib 2>/dev/null || true
 
       - name: Collect
         run: |
           mkdir -p dist
-          cp src/release/*.deb dist/ || { echo NO_DEB; exit 1; }
+          cp src/release/*.deb dist/ || { echo "NO_DEB"; exit 1; }
           ls -lh dist/
 
       - uses: actions/upload-artifact@v4
