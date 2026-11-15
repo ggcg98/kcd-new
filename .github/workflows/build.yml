@@ -32,7 +32,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ${{ env.TC }}
-          key: kcd-tc-${{ env.SDK_VER }}-v7
+          key: kcd-tc-${{ env.SDK_VER }}-v8
 
       - name: Install toolchain
         if: steps.tc.outputs.cache-hit != 'true'
@@ -95,8 +95,13 @@ jobs:
           echo 'int main(void){return 0;}' > /tmp/t.c
           clang -target arm64-apple-ios15.0 -isysroot "$S" -c /tmp/t.c -o /tmp/t.o
           file /tmp/t.o
-          clang -target arm64-apple-ios15.0 -isysroot "$S" /tmp/t.o -fuse-ld="$(cat "$TC/ld64_path.txt")" -o /tmp/t.out
+          echo "---- link with platform_version ----"
+          clang -target arm64-apple-ios15.0 -isysroot "$S" /tmp/t.o \
+            -fuse-ld="$(cat "$TC/ld64_path.txt")" \
+            -Wl,-platform_version,ios,15.0,15.0 \
+            -o /tmp/t.out
           file /tmp/t.out
+          echo "---- logos ----"
           printf '%%hook NSObject\n- (id)description { return %%orig; }\n%%end\n' > /tmp/x.xm
           perl "$TC/theos/bin/logos.pl" /tmp/x.xm > /tmp/x.mm
           wc -l /tmp/x.mm
@@ -112,6 +117,14 @@ jobs:
         run: |
           bash setup.sh
           find src -type f | wc -l
+
+      - name: Patch build.sh
+        run: |
+          cd src
+          sed -i 's|-fuse-ld=ld64.lld|-fuse-ld=ld64.lld -Wl,-platform_version,ios,15.0,15.0|g' build.sh
+          sed -i 's|-fuse-ld=\$LD64_PATH|-fuse-ld=$LD64_PATH -Wl,-platform_version,ios,15.0,15.0|g' build.sh
+          echo "---- patched ----"
+          grep -n 'fuse-ld\|platform_version' build.sh
 
       - name: Attach kfd
         continue-on-error: true
@@ -131,6 +144,7 @@ jobs:
         run: |
           ls -lh src/release/ 2>/dev/null || true
           ls -lh src/tweak/*.dylib 2>/dev/null || true
+          file src/tweak/*.dylib 2>/dev/null || true
 
       - name: Collect
         run: |
