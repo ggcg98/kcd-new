@@ -32,7 +32,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ${{ env.TC }}
-          key: kcd-tc-${{ env.SDK_VER }}-v8
+          key: kcd-tc-${{ env.SDK_VER }}-v9
 
       - name: Install toolchain
         if: steps.tc.outputs.cache-hit != 'true'
@@ -53,15 +53,34 @@ jobs:
           echo "==== theos ===="
           mkdir -p "$TC/theos"
           echo "$LDP" > "$TC/ld64_path.txt"
-          git clone --recursive --depth 1 https://github.com/theos/theos.git "$TC/theos"
-          echo "==== logos ===="
-          REAL=$(find "$TC/theos" -name 'logos.pl' -type f 2>/dev/null | head -1)
-          echo "REAL = $REAL"
-          if [ -n "$REAL" ] && [ "$REAL" != "$TC/theos/bin/logos.pl" ]; then
-            rm -f "$TC/theos/bin/logos.pl"
-            cp "$REAL" "$TC/theos/bin/logos.pl"
+          git clone --recursive --depth 1 https://github.com/theos/theos.git "$TC/theos" || true
+          cd "$TC/theos"
+          git submodule update --init --recursive 2>/dev/null || true
+          echo "==== logos perl ===="
+          ls -d bin/lib 2>/dev/null || echo "no bin/lib dir"
+          if [ ! -f bin/lib/Logos/Util.pm ]; then
+            echo "fallback: cloning theos/logos"
+            rm -rf /tmp/logos
+            git clone --depth 1 https://github.com/theos/logos.git /tmp/logos || true
+            mkdir -p bin/lib
+            if [ -d /tmp/logos/Logos ]; then
+              cp -r /tmp/logos/Logos bin/lib/
+            elif [ -d /tmp/logos/lib/Logos ]; then
+              cp -r /tmp/logos/lib/Logos bin/lib/
+            fi
           fi
-          chmod +x "$TC/theos/bin/logos.pl"
+          if [ ! -e bin/lib ] && [ -d lib ]; then ln -sfn ../lib bin/lib; fi
+          echo "---- pm files ----"
+          find bin/lib -name '*.pm' 2>/dev/null | head -8
+          if [ ! -f bin/lib/Logos/Util.pm ]; then echo "FATAL: Logos/Util.pm missing"; exit 1; fi
+          echo "==== logos.pl ===="
+          REAL=$(find . -name 'logos.pl' -type f 2>/dev/null | head -1)
+          echo "REAL = $REAL"
+          if [ -n "$REAL" ] && [ "$REAL" != "$PWD/bin/logos.pl" ]; then
+            rm -f bin/logos.pl
+            cp "$REAL" bin/logos.pl
+          fi
+          chmod +x bin/logos.pl
           echo "==== sdk ===="
           git clone --filter=blob:none --sparse https://github.com/theos/sdks.git /tmp/sdks
           cd /tmp/sdks
@@ -85,26 +104,26 @@ jobs:
           echo "ld64 -> $(readlink -f /usr/local/bin/ld64.lld)"
           echo "ldid -> $(readlink -f /usr/local/bin/ldid)"
           ls -l "$TC/theos/bin/logos.pl"
+          find "$TC/theos/bin/lib" -name 'Util.pm' | head -3
           ls "$TC/theos/sdks"
 
       - name: Smoke
         run: |
           set -e
+          export PERL5LIB="$TC/theos/bin/lib:$TC/theos/lib"
           S="$TC/theos/sdks/iPhoneOS16.5.sdk"
           echo "SDK = $S"
+          echo "PERL5LIB = $PERL5LIB"
           echo 'int main(void){return 0;}' > /tmp/t.c
           clang -target arm64-apple-ios15.0 -isysroot "$S" -c /tmp/t.c -o /tmp/t.o
           file /tmp/t.o
-          echo "---- link with platform_version ----"
-          clang -target arm64-apple-ios15.0 -isysroot "$S" /tmp/t.o \
-            -fuse-ld="$(cat "$TC/ld64_path.txt")" \
-            -Wl,-platform_version,ios,15.0,15.0 \
-            -o /tmp/t.out
+          clang -target arm64-apple-ios15.0 -isysroot "$S" /tmp/t.o -fuse-ld="$(cat "$TC/ld64_path.txt")" -Wl,-platform_version,ios,15.0,15.0 -o /tmp/t.out
           file /tmp/t.out
           echo "---- logos ----"
           printf '%%hook NSObject\n- (id)description { return %%orig; }\n%%end\n' > /tmp/x.xm
           perl "$TC/theos/bin/logos.pl" /tmp/x.xm > /tmp/x.mm
           wc -l /tmp/x.mm
+          head -6 /tmp/x.mm
           echo "SMOKE OK"
 
       - name: Import kfd
@@ -122,9 +141,8 @@ jobs:
         run: |
           cd src
           sed -i 's|-fuse-ld=ld64.lld|-fuse-ld=ld64.lld -Wl,-platform_version,ios,15.0,15.0|g' build.sh
-          sed -i 's|-fuse-ld=\$LD64_PATH|-fuse-ld=$LD64_PATH -Wl,-platform_version,ios,15.0,15.0|g' build.sh
           echo "---- patched ----"
-          grep -n 'fuse-ld\|platform_version' build.sh
+          grep -n 'fuse-ld' build.sh || true
 
       - name: Attach kfd
         continue-on-error: true
@@ -136,6 +154,7 @@ jobs:
           cd src
           export THEOS="$TC/theos"
           export PATH="/usr/local/bin:$TC:$PATH"
+          export PERL5LIB="$TC/theos/bin/lib:$TC/theos/lib"
           export AR=ar
           bash build.sh
 
