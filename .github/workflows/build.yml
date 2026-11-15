@@ -45,8 +45,6 @@ jobs:
             if [ -x "/usr/lib/llvm-$v/bin/ld64.lld" ]; then LDP="/usr/lib/llvm-$v/bin/ld64.lld"; break; fi
           done
           if [ -z "$LDP" ] && [ -x /usr/bin/ld64.lld ]; then LDP=/usr/bin/ld64.lld; fi
-          echo "LD64 = $LDP"
-          if [ -z "$LDP" ]; then echo "FATAL no ld64"; exit 1; fi
           sudo ln -sf "$LDP" /usr/local/bin/ld64.lld
           mkdir -p "$TC/theos/bin/lib/Logos" "$TC/theos/sdks"
           echo "$LDP" > "$TC/ld64_path.txt"
@@ -60,10 +58,9 @@ jobs:
               cd /tmp/sdks
               if git sparse-checkout set "$SDK_VER"; then ok=1; break; fi
             fi
-            echo "retry $i"
             sleep 3
           done
-          if [ "$ok" != "1" ]; then echo "FATAL sdk clone failed"; exit 1; fi
+          if [ "$ok" != "1" ]; then echo "FATAL sdk"; exit 1; fi
           mv "/tmp/sdks/$SDK_VER" "$TC/theos/sdks/"
           rm -rf /tmp/ldid
           git clone --depth 1 https://github.com/ProcursusTeam/ldid.git /tmp/ldid
@@ -71,14 +68,13 @@ jobs:
           git submodule update --init
           make -j4
           cp ldid "$TC/ldid"
-          echo "==== ready ===="
-          du -sh "$TC"
 
       - name: Link
         run: |
           sudo mkdir -p /usr/local/bin
           if [ -f "$TC/ld64_path.txt" ]; then sudo ln -sf "$(cat "$TC/ld64_path.txt")" /usr/local/bin/ld64.lld; fi
           sudo ln -sf "$TC/ldid" /usr/local/bin/ldid
+          echo "ld64 -> $(readlink -f /usr/local/bin/ld64.lld)"
 
       - name: Smoke
         run: |
@@ -94,32 +90,38 @@ jobs:
       - name: Import kfd
         run: |
           set -e
-          echo "==== clone kfd ===="
-          ok=0
+          echo "==== clone ===="
           for url in \
             "https://github.com/felix-pb/kfd.git" \
             "https://gitclone.com/github.com/felix-pb/kfd.git" \
             "https://ghproxy.net/https://github.com/felix-pb/kfd.git" ; do
             echo "try: $url"
             rm -rf /tmp/kfd
-            if [ -n "$KFD_REF" ]; then
-              if git clone --recursive "$url" /tmp/kfd 2>/dev/null; then
-                ( cd /tmp/kfd && git checkout "$KFD_REF" && git submodule update --init --recursive ) && ok=1 && break
-              fi
-            else
-              if git clone --recursive --depth 1 "$url" /tmp/kfd 2>/dev/null; then ok=1; break; fi
-            fi
+            if git clone --recursive --depth 1 "$url" /tmp/kfd 2>/dev/null; then break; fi
             sleep 2
           done
-          echo "clone ok = $ok"
-          echo "==== verify ===="
-          ls -l /tmp/kfd/libkfd/kfd.h
-          ls /tmp/kfd/libkfd/*.c | wc -l
-          ls /tmp/kfd/libkfd/*.m 2>/dev/null | wc -l
-          ls /tmp/kfd/exploit/*.c | wc -l
-          if [ ! -f /tmp/kfd/libkfd/kfd.h ]; then echo "FATAL: no kfd.h"; exit 1; fi
-          if [ "$(ls /tmp/kfd/libkfd/*.c | wc -l)" -eq 0 ]; then echo "FATAL: no libkfd sources"; exit 1; fi
-          if [ "$(ls /tmp/kfd/exploit/*.c | wc -l)" -eq 0 ]; then echo "FATAL: no exploit sources"; exit 1; fi
+
+          echo "==== structure ===="
+          find /tmp/kfd -maxdepth 2 -type d | head -20
+
+          echo "==== locate kfd.h ===="
+          KP=$(find /tmp/kfd -name 'kfd.h' -type f 2>/dev/null | head -1)
+          echo "kfd.h = $KP"
+          if [ -z "$KP" ]; then echo "FATAL: no kfd.h"; exit 1; fi
+          LKDIR=$(dirname "$KP")
+          BASE=$(dirname "$LKDIR")
+          echo "LKDIR = $LKDIR"
+          echo "BASE = $BASE"
+          echo "---- BASE content ----"
+          ls "$BASE"
+
+          if [ ! -d "$BASE/exploit" ]; then echo "FATAL: no exploit dir under BASE"; exit 1; fi
+          echo "$BASE" > /tmp/kfd_base.txt
+
+          echo "---- counts ----"
+          ls "$BASE/libkfd"/*.c 2>/dev/null | wc -l
+          ls "$BASE/libkfd"/*.m 2>/dev/null | wc -l
+          ls "$BASE/exploit"/*.c 2>/dev/null | wc -l
           echo "KFD OK"
 
       - name: Generate
@@ -175,20 +177,24 @@ jobs:
       - name: Attach kfd
         run: |
           set -e
-          if [ ! -f /tmp/kfd/libkfd/kfd.h ]; then echo "FATAL: kfd missing"; exit 1; fi
+          BASE=$(cat /tmp/kfd_base.txt)
+          echo "BASE = $BASE"
           rm -rf src/kcore/kfd
-          cp -r /tmp/kfd src/kcore/kfd
+          mkdir -p src/kcore/kfd
+          cp -r "$BASE"/* src/kcore/kfd/
           echo "---- attached ----"
-          ls src/kcore/kfd/libkfd/*.c | wc -l
-          ls src/kcore/kfd/libkfd/*.m | wc -l
-          ls src/kcore/kfd/exploit/*.c | wc -l
+          ls src/kcore/kfd
+          echo "libkfd .c = $(ls src/kcore/kfd/libkfd/*.c 2>/dev/null | wc -l)"
+          echo "libkfd .m = $(ls src/kcore/kfd/libkfd/*.m 2>/dev/null | wc -l)"
+          echo "exploit .c = $(ls src/kcore/kfd/exploit/*.c 2>/dev/null | wc -l)"
+          if [ "$(ls src/kcore/kfd/libkfd/*.c 2>/dev/null | wc -l)" -eq 0 ]; then echo "FATAL: kfd not attached"; exit 1; fi
 
       - name: Build
         run: |
           cd src
           N=$(ls kcore/kfd/libkfd/*.c 2>/dev/null | wc -l)
           echo "kfd sources = $N"
-          if [ "$N" -eq 0 ]; then echo "FATAL: refusing to build stub"; exit 1; fi
+          if [ "$N" -eq 0 ]; then echo "FATAL: stub build refused"; exit 1; fi
           export THEOS="$TC/theos"
           export PATH="/usr/local/bin:$TC:$PATH"
           export AR=ar
@@ -197,11 +203,9 @@ jobs:
       - name: Inspect
         if: always()
         run: |
-          ls -lh src/release/ 2>/dev/null || true
           ls -lh src/tweak/*.dylib 2>/dev/null || true
+          ls -lh src/release/ 2>/dev/null || true
           file src/tweak/*.dylib 2>/dev/null || true
-          echo "---- size ----"
-          du -h src/tweak/*.dylib 2>/dev/null || true
 
       - name: Collect
         run: |
