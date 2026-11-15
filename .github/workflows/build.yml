@@ -1,0 +1,63 @@
+name: build-ios
+on:
+  push:
+  workflow_dispatch:
+    inputs:
+      kfd_ref:
+        description: 'kfd commit/tag'
+        required: false
+        default: ''
+jobs:
+  build:
+    runs-on: macos-13
+    env:
+      THEOS: ${{ github.workspace }}/theos
+      SDKVER: iPhoneOS16.5.sdk
+      KFD_REF: ${{ github.event.inputs.kfd_ref || '' }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install tools
+        run: |
+          brew install ldid || true
+          brew install dpkg || brew install dpkg-dev || true
+      - name: Setup Theos
+        run: |
+          git clone --recursive --depth 1 https://github.com/theos/theos.git "$THEOS"
+          echo "$THEOS/bin" >> $GITHUB_PATH
+      - name: Fetch SDK
+        run: |
+          git clone --filter=blob:none --sparse https://github.com/theos/sdks.git /tmp/sdks
+          cd /tmp/sdks && git sparse-checkout set "$SDKVER"
+          mkdir -p "$THEOS/sdks" && mv "$SDKVER" "$THEOS/sdks/"
+      - name: Import kfd
+        continue-on-error: true
+        run: |
+          if [ -n "$KFD_REF" ]; then
+            git clone --recursive https://github.com/felix-pb/kfd.git /tmp/kfd
+            cd /tmp/kfd && git checkout "$KFD_REF" && git submodule update --init --recursive
+          else
+            git clone --recursive --depth 1 https://github.com/felix-pb/kfd.git /tmp/kfd
+          fi
+          ls -l /tmp/kfd/libkfd/kfd.h || true
+      - name: Generate
+        run: bash setup.sh
+      - name: Attach kfd
+        continue-on-error: true
+        run: |
+          if [ -d /tmp/kfd ]; then
+            rm -rf src/kcore/kfd && cp -r /tmp/kfd src/kcore/kfd
+          fi
+      - name: Verify
+        continue-on-error: true
+        run: cd src && bash verify.sh
+      - name: Build
+        run: cd src && bash build.sh
+      - name: Collect
+        run: |
+          mkdir -p dist && cp src/release/*.deb dist/ || echo NO_DEB
+          ls -lh dist/
+      - uses: actions/upload-artifact@v4
+        with:
+          name: KCD-deb
+          path: dist/*.deb
+          if-no-files-found: error
