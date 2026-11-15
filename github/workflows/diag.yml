@@ -5,22 +5,22 @@ jobs:
   diag:
     runs-on: ubuntu-22.04
     steps:
-      - run: |
-          git clone https://github.com/felix-pb/kfd.git /tmp/kfd
-          cd /tmp/kfd
-          echo "==== BRANCHES ===="
-          git branch -a
-          echo "==== TOTAL TRACKED FILES ===="
-          git ls-files | wc -l
-          echo "==== .c COUNT ===="
-          git ls-files | grep -c '\.c$' || echo 0
-          echo "==== .c LIST ===="
-          git ls-files | grep '\.c$' | head -40
-          echo "==== .h LIST ===="
-          git ls-files | grep '\.h$' | head -40
-          echo "==== ROOT FILES ===="
-          git ls-files | grep -v '/' | head -20
-          echo "==== libkfd.h FIRST 80 ===="
-          sed -n '1,80p' kfd/libkfd.h
-          echo "==== kfd.h IN HISTORY ===="
-          git log --all --oneline -- '*kfd.h' | head -5
+      - name: dump
+        run: |
+          curl -s "https://api.github.com/repos/felix-pb/kfd/git/trees/main?recursive=1" -o /tmp/t.json
+          echo "==== ALL FILES ===="
+          python3 -c "
+import json
+d = json.load(open('/tmp/t.json'))
+for t in d.get('tree', []):
+    if t['type'] == 'blob':
+        print(t['path'])
+" | sort
+          echo "==== C FILE COUNT ===="
+          python3 -c "
+import json
+d = json.load(open('/tmp/t.json'))
+c = [t['path'] for t in d.get('tree', []) if t.get('path','').endswith('.c')]
+print(len(c))
+for x in c[:40]: print(x)
+"
