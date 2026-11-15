@@ -32,7 +32,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ${{ env.TC }}
-          key: kcd-tc-${{ env.SDK_VER }}-v10
+          key: kcd-tc-${{ env.SDK_VER }}-v11
 
       - name: Install toolchain
         if: steps.tc.outputs.cache-hit != 'true'
@@ -41,6 +41,7 @@ jobs:
           echo "==== apt ===="
           sudo apt-get update -qq
           sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq clang lld llvm make g++ pkg-config git perl dpkg curl xz-utils libssl-dev binutils libplist-dev
+
           echo "==== ld64 ===="
           LDP=""
           for v in 14 15 16 13 12 11; do
@@ -50,24 +51,35 @@ jobs:
           echo "LD64 = $LDP"
           if [ -z "$LDP" ]; then echo "FATAL no ld64"; exit 1; fi
           sudo ln -sf "$LDP" /usr/local/bin/ld64.lld
-          echo "==== theos ===="
-          mkdir -p "$TC/theos"
+
+          echo "==== fake theos tree ===="
+          mkdir -p "$TC/theos/bin/lib/Logos" "$TC/theos/sdks"
           echo "$LDP" > "$TC/ld64_path.txt"
-          git clone --depth 1 https://github.com/theos/theos.git "$TC/theos" || true
-          echo "==== stub logos ===="
           printf '#!/bin/sh\ncat "$1"\n' > "$TC/theos/bin/logos.pl"
           chmod +x "$TC/theos/bin/logos.pl"
-          mkdir -p "$TC/theos/bin/lib/Logos"
-          printf 'package Logos::Util;\nour @ISA = ();\nsub AUTOLOAD { }\n1;\n' > "$TC/theos/bin/lib/Logos/Util.pm"
+          printf 'package Logos::Util;\n1;\n' > "$TC/theos/bin/lib/Logos/Util.pm"
+          head -3 "$TC/theos/bin/logos.pl"
           ls -l "$TC/theos/bin/logos.pl"
-          cat "$TC/theos/bin/logos.pl"
+
           echo "==== sdk ===="
-          git clone --filter=blob:none --sparse https://github.com/theos/sdks.git /tmp/sdks
-          cd /tmp/sdks
-          git sparse-checkout set "$SDK_VER"
-          mkdir -p "$TC/theos/sdks"
-          mv "$SDK_VER" "$TC/theos/sdks/"
+          ok=0
+          for i in 1 2 3; do
+            rm -rf /tmp/sdks
+            if git clone --filter=blob:none --sparse https://github.com/theos/sdks.git /tmp/sdks; then
+              cd /tmp/sdks
+              if git sparse-checkout set "$SDK_VER"; then ok=1; break; fi
+            fi
+            echo "retry $i"
+            sleep 3
+          done
+          if [ "$ok" != "1" ]; then echo "FATAL sdk clone failed"; exit 1; fi
+          ls /tmp/sdks
+          if [ ! -d "/tmp/sdks/$SDK_VER" ]; then echo "FATAL sdk dir missing"; exit 1; fi
+          mv "/tmp/sdks/$SDK_VER" "$TC/theos/sdks/"
+          ls "$TC/theos/sdks/$SDK_VER/System/Library/Frameworks" | head -5
+
           echo "==== ldid ===="
+          rm -rf /tmp/ldid
           git clone --depth 1 https://github.com/ProcursusTeam/ldid.git /tmp/ldid
           cd /tmp/ldid
           git submodule update --init
@@ -83,7 +95,7 @@ jobs:
           sudo ln -sf "$TC/ldid" /usr/local/bin/ldid
           echo "ld64 -> $(readlink -f /usr/local/bin/ld64.lld)"
           echo "ldid -> $(readlink -f /usr/local/bin/ldid)"
-          echo "logos -> $(cat "$TC/theos/bin/logos.pl")"
+          echo "logos -> $(head -2 "$TC/theos/bin/logos.pl" | tr '\n' ' ')"
           ls "$TC/theos/sdks"
 
       - name: Smoke
@@ -105,7 +117,12 @@ jobs:
       - name: Import kfd
         continue-on-error: true
         run: |
-          git clone --recursive --depth 1 https://github.com/felix-pb/kfd.git /tmp/kfd || true
+          for i in 1 2 3; do
+            rm -rf /tmp/kfd
+            if git clone --recursive --depth 1 https://github.com/felix-pb/kfd.git /tmp/kfd; then break; fi
+            echo "kfd retry $i"
+            sleep 3
+          done
           ls -l /tmp/kfd/libkfd/kfd.h || echo "no kfd"
 
       - name: Generate
@@ -135,7 +152,7 @@ jobs:
             '}' > /tmp/hook.txt
           wc -l /tmp/hook.txt
           python3 -c "import re;p='tweak/Overlay.xm';s=open(p).read();h=open('/tmp/hook.txt').read();n=re.sub(r'%hook\s+SpringBoard.*?%end',h,s,flags=re.S);open(p,'w').write(n);print('hook replaced:',len(s),'->',len(n))"
-          grep -c 'kcd_hook_adfl' tweak/Overlay.xm
+          grep -c 'kcd_hook_adfl' tweak/Overlay.xm || true
           grep -c '%hook' tweak/Overlay.xm || echo "no %hook left"
 
       - name: Patch build.sh
@@ -144,7 +161,6 @@ jobs:
           sed -i 's|-fuse-ld=ld64.lld|-fuse-ld=ld64.lld -Wl,-platform_version,ios,15.0,15.0|g' build.sh
           echo "---- patched ----"
           grep -n 'fuse-ld' build.sh || true
-          grep -n 'logos.pl' build.sh || true
 
       - name: Attach kfd
         continue-on-error: true
