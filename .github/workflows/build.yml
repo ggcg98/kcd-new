@@ -18,7 +18,7 @@ jobs:
         id: tc
         with:
           path: ${{ env.TC }}
-          key: kcd-tc-v16
+          key: kcd-tc-v17
       - name: Install
         if: steps.tc.outputs.cache-hit != 'true'
         run: |
@@ -57,9 +57,7 @@ jobs:
           set -e
           rm -rf /tmp/t
           git clone --depth 1 https://github.com/Odyssey-Team/Taurine.git /tmp/t
-          echo "==== kfd files ===="
-          ls -la /tmp/t/Taurine/exploit/kfd
-          ls -la /tmp/t/Taurine/exploit/kfd/libkfd | head -20
+          ls /tmp/t/Taurine/exploit/kfd
       - name: Generate
         run: |
           bash setup.sh
@@ -69,10 +67,17 @@ jobs:
           set -e
           SRC=/tmp/t/Taurine/exploit/kfd
           rm -rf src/kcore/kfd
-          mkdir -p src/kcore/kfd/libkfd
-          cp -r "$SRC"/. src/kcore/kfd/libkfd/
-          find src/kcore/kfd -maxdepth 2 -type d
+          mkdir -p src/kcore/kfd
+          cp -r "$SRC"/. src/kcore/kfd/
+          ls src/kcore/kfd
+          echo "--- sub ---"
+          ls src/kcore/kfd/libkfd | head -20
           echo "m=$(find src/kcore/kfd -name '*.m' | wc -l) c=$(find src/kcore/kfd -name '*.c' | wc -l) h=$(find src/kcore/kfd -name '*.h' | wc -l)"
+      - name: Diag
+        run: |
+          cd src
+          echo "=== kfd refs in build.sh ==="
+          grep -n "kfd\|CFLAGS\|libkfd\|stub" build.sh | head -25 || true
       - name: Patch krw.h
         run: |
           cd src
@@ -82,7 +87,7 @@ jobs:
           cd src
           printf '%s\n' \
           '#include "krw.h"' \
-          '#include "offsets.h"' \
+          '#include "koffsets.h"' \
           '#include <sys/utsname.h>' \
           '#include <stdlib.h>' \
           '#include <string.h>' \
@@ -184,7 +189,7 @@ jobs:
           'void w32(uint64_t a, uint32_t v) { be_kfd.kwrite(a, &v, 4); }' \
           'uint64_t kread_ptr(uint64_t a) { uint64_t v = 0; be_kfd.kread(a, &v, 8); return PAC_STRIP(v); }' \
           > kcore/krw.c
-          echo "krw.c lines: $(wc -l < kcore/krw.c)"
+          echo "krw.c: $(wc -l < kcore/krw.c) lines"
       - name: Patch Overlay
         run: |
           cd src
@@ -196,8 +201,10 @@ jobs:
           [ -f game/ue4_offsets.c ] && mv game/ue4_offsets.c game/ue4_offsets.m
           sed -i 's|kcore/koffsets\.c|kcore/koffsets.m|g' build.sh
           sed -i 's|game/ue4_offsets\.c|game/ue4_offsets.m|g' build.sh
-          sed -i 's|kcore/kfd/libkfd/\*\.c kcore/kfd/libkfd/\*\.m|$(find kcore/kfd/libkfd -name "*.c" -o -name "*.m")|g' build.sh
-          sed -i 's|-Ikcore/kfd -Ikcore/kfd/libkfd|-Ikcore/kfd -Ikcore/kfd/libkfd -Ikcore/kfd/libkfd/libkfd -Ikcore/kfd/libkfd/libkfd/info -Ikcore/kfd/libkfd/libkfd/krkw -Ikcore/kfd/libkfd/libkfd/puaf|g' build.sh
+          sed -i 's|kcore/kfd/libkfd/\*\.c|kcore/kfd/*.c|g' build.sh
+          sed -i 's|kcore/kfd/libkfd/\*\.m|kcore/kfd/*.m|g' build.sh
+          sed -i 's|-Ikcore/kfd/kfd|-Ikcore/kfd -Ikcore/kfd/libkfd -Ikcore/kfd/libkfd/libkfd|g' build.sh
+          sed -i 's|-Ikcore/kfd/libkfd/info|-Ikcore/kfd/libkfd/info -Ikcore/kfd/libkfd/libkfd/info|g' build.sh
       - name: Fix headers
         run: |
           cd src
@@ -237,6 +244,7 @@ jobs:
           export THEOS="$TC/theos" PATH="/usr/local/bin:$TC:$PATH" AR=ar
           bash build.sh
       - name: Collect
+        if: always()
         run: |
           mkdir -p dist
           cp src/release/*.deb dist/ || true
