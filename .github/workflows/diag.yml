@@ -1,0 +1,20 @@
+name: kfd-diag
+on:
+  workflow_dispatch:
+jobs:
+  diag:
+    runs-on: ubuntu-22.04
+    steps:
+      - run: |
+          git clone --depth 1 https://github.com/Odyssey-Team/Taurine.git /tmp/t
+          cd /tmp/t
+          echo "==== kfd dir ===="
+          ls -la Taurine/exploit/kfd/
+          echo "==== libkfd.h head ===="
+          head -60 Taurine/exploit/kfd/libkfd.h
+          echo "==== kbase refs ===="
+          grep -rn "kernel_base\|kernel_slide\|kbase" Taurine/exploit/kfd/*.h | head -20
+          echo "==== struct kfd ===="
+          grep -n -A 20 "struct kfd" Taurine/exploit/kfd/common.h | head -40
+          echo "==== kopen impl ===="
+          grep -rn "kopen" Taurine/exploit/kfd/*.c | head -5
