@@ -5,11 +5,6 @@ on:
     paths-ignore:
       - '*.md'
   workflow_dispatch:
-    inputs:
-      kfd_ref:
-        description: 'kfd commit/tag'
-        required: false
-        default: ''
 
 concurrency:
   group: build-${{ github.ref }}
@@ -21,7 +16,6 @@ jobs:
     timeout-minutes: 25
     env:
       SDK_VER: iPhoneOS16.5.sdk
-      KFD_REF: ${{ github.event.inputs.kfd_ref || '' }}
       TC: ${{ github.workspace }}/.tc
 
     steps:
@@ -39,7 +33,7 @@ jobs:
         run: |
           set -e
           sudo apt-get update -qq
-          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq clang lld llvm make g++ pkg-config git perl dpkg curl xz-utils libssl-dev binutils libplist-dev
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq clang lld llvm make g++ pkg-config git perl dpkg curl xz-utils unzip libssl-dev binutils libplist-dev
           LDP=""
           for v in 14 15 16 13 12 11; do
             if [ -x "/usr/lib/llvm-$v/bin/ld64.lld" ]; then LDP="/usr/lib/llvm-$v/bin/ld64.lld"; break; fi
@@ -74,7 +68,6 @@ jobs:
           sudo mkdir -p /usr/local/bin
           if [ -f "$TC/ld64_path.txt" ]; then sudo ln -sf "$(cat "$TC/ld64_path.txt")" /usr/local/bin/ld64.lld; fi
           sudo ln -sf "$TC/ldid" /usr/local/bin/ldid
-          echo "ld64 -> $(readlink -f /usr/local/bin/ld64.lld)"
 
       - name: Smoke
         run: |
@@ -87,42 +80,37 @@ jobs:
           file /tmp/t.out
           echo "SMOKE OK"
 
-      - name: Import kfd
+      - name: Extract kfd zip
         run: |
           set -e
-          echo "==== clone ===="
-          for url in \
-            "https://github.com/felix-pb/kfd.git" \
-            "https://gitclone.com/github.com/felix-pb/kfd.git" \
-            "https://ghproxy.net/https://github.com/felix-pb/kfd.git" ; do
-            echo "try: $url"
-            rm -rf /tmp/kfd
-            if git clone --recursive --depth 1 "$url" /tmp/kfd 2>/dev/null; then break; fi
-            sleep 2
-          done
-
-          echo "==== structure ===="
-          find /tmp/kfd -maxdepth 2 -type d | head -20
-
-          echo "==== locate kfd.h ===="
-          KP=$(find /tmp/kfd -name 'kfd.h' -type f 2>/dev/null | head -1)
-          echo "kfd.h = $KP"
-          if [ -z "$KP" ]; then echo "FATAL: no kfd.h"; exit 1; fi
-          LKDIR=$(dirname "$KP")
+          ZIP=$(ls kfd*.zip 2>/dev/null | head -1)
+          if [ -z "$ZIP" ]; then echo "FATAL: 仓库根没有 kfd*.zip"; exit 1; fi
+          echo "ZIP = $ZIP"
+          ls -lh "$ZIP"
+          rm -rf /tmp/kfd_src
+          mkdir -p /tmp/kfd_src
+          unzip -q "$ZIP" -d /tmp/kfd_src
+          echo "==== all dirs (depth 3) ===="
+          find /tmp/kfd_src -maxdepth 3 -type d | sort
+          echo "==== libkfd dirs ===="
+          LKDIRS=$(find /tmp/kfd_src -type d -name 'libkfd')
+          echo "$LKDIRS"
+          LKDIR=$(echo "$LKDIRS" | head -1)
+          if [ -z "$LKDIR" ]; then echo "FATAL: 找不到 libkfd 目录"; exit 1; fi
           BASE=$(dirname "$LKDIR")
           echo "LKDIR = $LKDIR"
-          echo "BASE = $BASE"
-          echo "---- BASE content ----"
-          ls "$BASE"
-
-          if [ ! -d "$BASE/exploit" ]; then echo "FATAL: no exploit dir under BASE"; exit 1; fi
+          echo "BASE  = $BASE"
           echo "$BASE" > /tmp/kfd_base.txt
-
-          echo "---- counts ----"
-          ls "$BASE/libkfd"/*.c 2>/dev/null | wc -l
-          ls "$BASE/libkfd"/*.m 2>/dev/null | wc -l
-          ls "$BASE/exploit"/*.c 2>/dev/null | wc -l
-          echo "KFD OK"
+          echo "==== libkfd 内容 ===="
+          ls -la "$LKDIR" | head -40
+          echo "==== BASE 内容 ===="
+          ls -la "$BASE"
+          echo "==== 统计 ===="
+          echo "libkfd .c = $(find "$LKDIR" -maxdepth 1 -name '*.c' | wc -l)"
+          echo "libkfd .m = $(find "$LKDIR" -maxdepth 1 -name '*.m' | wc -l)"
+          echo "libkfd .h = $(find "$LKDIR" -maxdepth 1 -name '*.h' | wc -l)"
+          echo "exploit  .c = $(find "$BASE/exploit" -maxdepth 1 -name '*.c' 2>/dev/null | wc -l)"
+          echo "==== KFD DIR OK ===="
 
       - name: Generate
         run: |
@@ -170,51 +158,3 @@ jobs:
           cd src
           LDP=$(cat "$TC/ld64_path.txt")
           sed -i "s|-fuse-ld=ld64.lld|-fuse-ld=$LDP -Wl,-platform_version,ios,15.0,15.0|g" build.sh
-          sed -i 's|-c tweak/Overlay.mm|-x objective-c -c tweak/Overlay.mm|g' build.sh
-          sed -i 's|-framework UIKit|-framework UIKit -framework CoreGraphics -framework CoreText -framework CoreImage|g' build.sh
-          grep -n 'fuse-ld\|framework UIKit' build.sh
-
-      - name: Attach kfd
-        run: |
-          set -e
-          BASE=$(cat /tmp/kfd_base.txt)
-          echo "BASE = $BASE"
-          rm -rf src/kcore/kfd
-          mkdir -p src/kcore/kfd
-          cp -r "$BASE"/* src/kcore/kfd/
-          echo "---- attached ----"
-          ls src/kcore/kfd
-          echo "libkfd .c = $(ls src/kcore/kfd/libkfd/*.c 2>/dev/null | wc -l)"
-          echo "libkfd .m = $(ls src/kcore/kfd/libkfd/*.m 2>/dev/null | wc -l)"
-          echo "exploit .c = $(ls src/kcore/kfd/exploit/*.c 2>/dev/null | wc -l)"
-          if [ "$(ls src/kcore/kfd/libkfd/*.c 2>/dev/null | wc -l)" -eq 0 ]; then echo "FATAL: kfd not attached"; exit 1; fi
-
-      - name: Build
-        run: |
-          cd src
-          N=$(ls kcore/kfd/libkfd/*.c 2>/dev/null | wc -l)
-          echo "kfd sources = $N"
-          if [ "$N" -eq 0 ]; then echo "FATAL: stub build refused"; exit 1; fi
-          export THEOS="$TC/theos"
-          export PATH="/usr/local/bin:$TC:$PATH"
-          export AR=ar
-          bash build.sh
-
-      - name: Inspect
-        if: always()
-        run: |
-          ls -lh src/tweak/*.dylib 2>/dev/null || true
-          ls -lh src/release/ 2>/dev/null || true
-          file src/tweak/*.dylib 2>/dev/null || true
-
-      - name: Collect
-        run: |
-          mkdir -p dist
-          cp src/release/*.deb dist/ || { echo NO_DEB; exit 1; }
-          ls -lh dist/
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: KCD-deb
-          path: dist/*.deb
-          if-no-files-found: error
