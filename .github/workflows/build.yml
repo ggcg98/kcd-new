@@ -32,7 +32,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ${{ env.TC }}
-          key: kcd-tc-${{ env.SDK_VER }}-v11
+          key: kcd-tc-${{ env.SDK_VER }}-v12
 
       - name: Install toolchain
         if: steps.tc.outputs.cache-hit != 'true'
@@ -58,8 +58,6 @@ jobs:
           printf '#!/bin/sh\ncat "$1"\n' > "$TC/theos/bin/logos.pl"
           chmod +x "$TC/theos/bin/logos.pl"
           printf 'package Logos::Util;\n1;\n' > "$TC/theos/bin/lib/Logos/Util.pm"
-          head -3 "$TC/theos/bin/logos.pl"
-          ls -l "$TC/theos/bin/logos.pl"
 
           echo "==== sdk ===="
           ok=0
@@ -73,7 +71,6 @@ jobs:
             sleep 3
           done
           if [ "$ok" != "1" ]; then echo "FATAL sdk clone failed"; exit 1; fi
-          ls /tmp/sdks
           if [ ! -d "/tmp/sdks/$SDK_VER" ]; then echo "FATAL sdk dir missing"; exit 1; fi
           mv "/tmp/sdks/$SDK_VER" "$TC/theos/sdks/"
           ls "$TC/theos/sdks/$SDK_VER/System/Library/Frameworks" | head -5
@@ -95,7 +92,6 @@ jobs:
           sudo ln -sf "$TC/ldid" /usr/local/bin/ldid
           echo "ld64 -> $(readlink -f /usr/local/bin/ld64.lld)"
           echo "ldid -> $(readlink -f /usr/local/bin/ldid)"
-          echo "logos -> $(head -2 "$TC/theos/bin/logos.pl" | tr '\n' ' ')"
           ls "$TC/theos/sdks"
 
       - name: Smoke
@@ -108,10 +104,6 @@ jobs:
           file /tmp/t.o
           clang -target arm64-apple-ios15.0 -isysroot "$S" /tmp/t.o -fuse-ld="$(cat "$TC/ld64_path.txt")" -Wl,-platform_version,ios,15.0,15.0 -o /tmp/t.out
           file /tmp/t.out
-          echo "---- stub logos ----"
-          printf 'int x = 1;\n' > /tmp/x.xm
-          "$TC/theos/bin/logos.pl" /tmp/x.xm > /tmp/x.mm
-          cat /tmp/x.mm
           echo "SMOKE OK"
 
       - name: Import kfd
@@ -129,6 +121,16 @@ jobs:
         run: |
           bash setup.sh
           find src -type f | wc -l
+
+      - name: Fix ext
+        run: |
+          cd src
+          if [ -f kcore/koffsets.c ]; then mv kcore/koffsets.c kcore/koffsets.m; echo "koffsets -> .m"; fi
+          if [ -f game/ue4_offsets.c ]; then mv game/ue4_offsets.c game/ue4_offsets.m; echo "ue4_offsets -> .m"; fi
+          sed -i 's|kcore/koffsets\.c|kcore/koffsets.m|g' build.sh
+          sed -i 's|game/ue4_offsets\.c|game/ue4_offsets.m|g' build.sh
+          echo "---- build.sh file list ----"
+          grep -n 'kcore/\|game/' build.sh | head -20
 
       - name: Fix hook
         run: |
@@ -153,13 +155,11 @@ jobs:
           wc -l /tmp/hook.txt
           python3 -c "import re;p='tweak/Overlay.xm';s=open(p).read();h=open('/tmp/hook.txt').read();n=re.sub(r'%hook\s+SpringBoard.*?%end',h,s,flags=re.S);open(p,'w').write(n);print('hook replaced:',len(s),'->',len(n))"
           grep -c 'kcd_hook_adfl' tweak/Overlay.xm || true
-          grep -c '%hook' tweak/Overlay.xm || echo "no %hook left"
 
       - name: Patch build.sh
         run: |
           cd src
           sed -i 's|-fuse-ld=ld64.lld|-fuse-ld=ld64.lld -Wl,-platform_version,ios,15.0,15.0|g' build.sh
-          echo "---- patched ----"
           grep -n 'fuse-ld' build.sh || true
 
       - name: Attach kfd
