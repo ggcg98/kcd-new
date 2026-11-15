@@ -32,7 +32,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ${{ env.TC }}
-          key: kcd-tc-${{ env.SDK_VER }}-v9
+          key: kcd-tc-${{ env.SDK_VER }}-v10
 
       - name: Install toolchain
         if: steps.tc.outputs.cache-hit != 'true'
@@ -53,34 +53,14 @@ jobs:
           echo "==== theos ===="
           mkdir -p "$TC/theos"
           echo "$LDP" > "$TC/ld64_path.txt"
-          git clone --recursive --depth 1 https://github.com/theos/theos.git "$TC/theos" || true
-          cd "$TC/theos"
-          git submodule update --init --recursive 2>/dev/null || true
-          echo "==== logos perl ===="
-          ls -d bin/lib 2>/dev/null || echo "no bin/lib dir"
-          if [ ! -f bin/lib/Logos/Util.pm ]; then
-            echo "fallback: cloning theos/logos"
-            rm -rf /tmp/logos
-            git clone --depth 1 https://github.com/theos/logos.git /tmp/logos || true
-            mkdir -p bin/lib
-            if [ -d /tmp/logos/Logos ]; then
-              cp -r /tmp/logos/Logos bin/lib/
-            elif [ -d /tmp/logos/lib/Logos ]; then
-              cp -r /tmp/logos/lib/Logos bin/lib/
-            fi
-          fi
-          if [ ! -e bin/lib ] && [ -d lib ]; then ln -sfn ../lib bin/lib; fi
-          echo "---- pm files ----"
-          find bin/lib -name '*.pm' 2>/dev/null | head -8
-          if [ ! -f bin/lib/Logos/Util.pm ]; then echo "FATAL: Logos/Util.pm missing"; exit 1; fi
-          echo "==== logos.pl ===="
-          REAL=$(find . -name 'logos.pl' -type f 2>/dev/null | head -1)
-          echo "REAL = $REAL"
-          if [ -n "$REAL" ] && [ "$REAL" != "$PWD/bin/logos.pl" ]; then
-            rm -f bin/logos.pl
-            cp "$REAL" bin/logos.pl
-          fi
-          chmod +x bin/logos.pl
+          git clone --depth 1 https://github.com/theos/theos.git "$TC/theos" || true
+          echo "==== stub logos ===="
+          printf '#!/bin/sh\ncat "$1"\n' > "$TC/theos/bin/logos.pl"
+          chmod +x "$TC/theos/bin/logos.pl"
+          mkdir -p "$TC/theos/bin/lib/Logos"
+          printf 'package Logos::Util;\nour @ISA = ();\nsub AUTOLOAD { }\n1;\n' > "$TC/theos/bin/lib/Logos/Util.pm"
+          ls -l "$TC/theos/bin/logos.pl"
+          cat "$TC/theos/bin/logos.pl"
           echo "==== sdk ===="
           git clone --filter=blob:none --sparse https://github.com/theos/sdks.git /tmp/sdks
           cd /tmp/sdks
@@ -103,27 +83,23 @@ jobs:
           sudo ln -sf "$TC/ldid" /usr/local/bin/ldid
           echo "ld64 -> $(readlink -f /usr/local/bin/ld64.lld)"
           echo "ldid -> $(readlink -f /usr/local/bin/ldid)"
-          ls -l "$TC/theos/bin/logos.pl"
-          find "$TC/theos/bin/lib" -name 'Util.pm' | head -3
+          echo "logos -> $(cat "$TC/theos/bin/logos.pl")"
           ls "$TC/theos/sdks"
 
       - name: Smoke
         run: |
           set -e
-          export PERL5LIB="$TC/theos/bin/lib:$TC/theos/lib"
           S="$TC/theos/sdks/iPhoneOS16.5.sdk"
           echo "SDK = $S"
-          echo "PERL5LIB = $PERL5LIB"
           echo 'int main(void){return 0;}' > /tmp/t.c
           clang -target arm64-apple-ios15.0 -isysroot "$S" -c /tmp/t.c -o /tmp/t.o
           file /tmp/t.o
           clang -target arm64-apple-ios15.0 -isysroot "$S" /tmp/t.o -fuse-ld="$(cat "$TC/ld64_path.txt")" -Wl,-platform_version,ios,15.0,15.0 -o /tmp/t.out
           file /tmp/t.out
-          echo "---- logos ----"
-          printf '%%hook NSObject\n- (id)description { return %%orig; }\n%%end\n' > /tmp/x.xm
-          perl "$TC/theos/bin/logos.pl" /tmp/x.xm > /tmp/x.mm
-          wc -l /tmp/x.mm
-          head -6 /tmp/x.mm
+          echo "---- stub logos ----"
+          printf 'int x = 1;\n' > /tmp/x.xm
+          "$TC/theos/bin/logos.pl" /tmp/x.xm > /tmp/x.mm
+          cat /tmp/x.mm
           echo "SMOKE OK"
 
       - name: Import kfd
@@ -137,12 +113,38 @@ jobs:
           bash setup.sh
           find src -type f | wc -l
 
+      - name: Fix hook
+        run: |
+          cd src
+          printf '%s\n' \
+            '#include <objc/runtime.h>' \
+            'static void (*kcd_orig_adfl)(id, SEL, id) = 0;' \
+            'static void kcd_hook_adfl(id self, SEL _cmd, id a) {' \
+            '    if (kcd_orig_adfl) kcd_orig_adfl(self, _cmd, a);' \
+            '    load_cfg();' \
+            '    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ make_window(); });' \
+            '    dispatch_async(dispatch_get_global_queue(0, 0), ^{ scan_loop(NULL); });' \
+            '}' \
+            '__attribute__((constructor)) static void kcd_install_hook(void) {' \
+            '    Class c = objc_getClass("SpringBoard");' \
+            '    if (!c) return;' \
+            '    Method m = class_getInstanceMethod(c, @selector(applicationDidFinishLaunching:));' \
+            '    if (!m) return;' \
+            '    kcd_orig_adfl = (void (*)(id, SEL, id))method_getImplementation(m);' \
+            '    method_setImplementation(m, (IMP)kcd_hook_adfl);' \
+            '}' > /tmp/hook.txt
+          wc -l /tmp/hook.txt
+          python3 -c "import re;p='tweak/Overlay.xm';s=open(p).read();h=open('/tmp/hook.txt').read();n=re.sub(r'%hook\s+SpringBoard.*?%end',h,s,flags=re.S);open(p,'w').write(n);print('hook replaced:',len(s),'->',len(n))"
+          grep -c 'kcd_hook_adfl' tweak/Overlay.xm
+          grep -c '%hook' tweak/Overlay.xm || echo "no %hook left"
+
       - name: Patch build.sh
         run: |
           cd src
           sed -i 's|-fuse-ld=ld64.lld|-fuse-ld=ld64.lld -Wl,-platform_version,ios,15.0,15.0|g' build.sh
           echo "---- patched ----"
           grep -n 'fuse-ld' build.sh || true
+          grep -n 'logos.pl' build.sh || true
 
       - name: Attach kfd
         continue-on-error: true
@@ -154,7 +156,6 @@ jobs:
           cd src
           export THEOS="$TC/theos"
           export PATH="/usr/local/bin:$TC:$PATH"
-          export PERL5LIB="$TC/theos/bin/lib:$TC/theos/lib"
           export AR=ar
           bash build.sh
 
