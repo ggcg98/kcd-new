@@ -32,7 +32,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ${{ env.TC }}
-          key: kcd-tc-${{ env.SDK_VER }}-v5
+          key: kcd-tc-${{ env.SDK_VER }}-v6
 
       - name: Install toolchain
         if: steps.tc.outputs.cache-hit != 'true'
@@ -40,27 +40,21 @@ jobs:
           set -e
           echo "==== apt ===="
           sudo apt-get update -qq
-          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq \
-            clang lld llvm make git perl dpkg curl xz-utils libssl-dev binutils
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq clang lld llvm make git perl dpkg curl xz-utils libssl-dev binutils
 
           echo "==== ld64.lld ===="
           LDP=""
           for v in 14 15 16 13 12 11; do
-            if [ -x "/usr/lib/llvm-$v/bin/ld64.lld" ]; then
-              LDP="/usr/lib/llvm-$v/bin/ld64.lld"
-              break
-            fi
+            if [ -x "/usr/lib/llvm-$v/bin/ld64.lld" ]; then LDP="/usr/lib/llvm-$v/bin/ld64.lld"; break; fi
           done
-          if [ -z "$LDP" ] && [ -x /usr/bin/ld64.lld ]; then
-            LDP=/usr/bin/ld64.lld
-          fi
+          if [ -z "$LDP" ] && [ -x /usr/bin/ld64.lld ]; then LDP=/usr/bin/ld64.lld; fi
           echo "LD64 = $LDP"
-          [ -n "$LDP" ] || { echo "FATAL: ld64.lld not found"; exit 1; }
+          [ -n "$LDP" ] || { echo "FATAL: no ld64.lld"; exit 1; }
           sudo mkdir -p /usr/local/bin
           sudo ln -sf "$LDP" /usr/local/bin/ld64.lld
 
           echo "==== theos ===="
-          mkdir -p "$TC"
+          mkdir -p "$TC/theos"
           echo "$LDP" > "$TC/ld64_path.txt"
           git clone --recursive --depth 1 https://github.com/theos/theos.git "$TC/theos"
 
@@ -68,28 +62,24 @@ jobs:
           ls -l "$TC/theos/bin/logos.pl" || true
           REAL=$(find "$TC/theos" -name 'logos.pl' -type f 2>/dev/null | head -1)
           if [ -z "$REAL" ]; then
-            TARGET=$(readlink -f "$TC/theos/bin/logos.pl" 2>/dev/null || true)
-            [ -n "$TARGET" ] && [ -f "$TARGET" ] && REAL="$TARGET"
+            T2=$(readlink -f "$TC/theos/bin/logos.pl" 2>/dev/null || true)
+            if [ -n "$T2" ] && [ -f "$T2" ]; then REAL="$T2"; fi
           fi
           echo "REAL = $REAL"
-          if [ -n "$REAL" ] && [ -f "$REAL" ]; then
+          if [ -n "$REAL" ] && [ -f "$REAL" ] && [ "$REAL" != "$TC/theos/bin/logos.pl" ]; then
             rm -f "$TC/theos/bin/logos.pl"
             cp "$REAL" "$TC/theos/bin/logos.pl"
-            chmod +x "$TC/theos/bin/logos.pl"
-            echo "$TC/theos/bin/logos.pl" > "$TC/logos_path.txt"
-          else
-            echo "FATAL: logos.pl not resolvable"
-            exit 1
           fi
-          perl "$TC/theos/bin/logos.pl" 2>&1 | head -3 || true
+          chmod +x "$TC/theos/bin/logos.pl"
           ls -l "$TC/theos/bin/logos.pl"
 
           echo "==== sdk ===="
           git clone --filter=blob:none --sparse https://github.com/theos/sdks.git /tmp/sdks
           cd /tmp/sdks
           git sparse-checkout set "$SDK_VER"
-          mv "$SDK_VER" "$TC/sdk"
-          ls "$TC/sdk/System/Library/Frameworks" | head -5
+          mkdir -p "$TC/theos/sdks"
+          mv "$SDK_VER" "$TC/theos/sdks/"
+          ls "$TC/theos/sdks/$SDK_VER/System/Library/Frameworks" | head -5
 
           echo "==== ldid ===="
           git clone --depth 1 https://github.com/ProcursusTeam/ldid.git /tmp/ldid
@@ -100,6 +90,7 @@ jobs:
 
           echo "==== ready ===="
           du -sh "$TC"
+          ls "$TC/theos/sdks"
 
       - name: Link toolchain
         run: |
@@ -107,36 +98,26 @@ jobs:
           sudo mkdir -p /usr/local/bin
           [ -f "$TC/ld64_path.txt" ] && sudo ln -sf "$(cat "$TC/ld64_path.txt")" /usr/local/bin/ld64.lld
           sudo ln -sf "$TC/ldid" /usr/local/bin/ldid
-          echo "ld64  -> $(cat "$TC/ld64_path.txt" 2>/dev/null)"
-          echo "ldid  -> $(which ldid)"
-          echo "logos -> $(ls -l "$TC/theos/bin/logos.pl" 2>/dev/null)"
-          ls "$TC/sdk/System/Library/Frameworks" | head -3
+          echo "ld64  -> $(readlink -f /usr/local/bin/ld64.lld)"
+          echo "ldid  -> $(readlink -f /usr/local/bin/ldid)"
+          echo "logos -> $(ls -l "$TC/theos/bin/logos.pl")"
+          echo "sdk   -> $(ls "$TC/theos/sdks")"
 
       - name: Smoke test
         run: |
           set -e
-          export SDK_PATH="$TC/sdk"
-
-          echo "==== compile ===="
+          SDK_PATH="$TC/theos/sdks/iPhoneOS16.5.sdk"
+          echo "SDK_PATH = $SDK_PATH"
           echo 'int main(void){return 0;}' > /tmp/t.c
           clang -target arm64-apple-ios15.0 -isysroot "$SDK_PATH" -c /tmp/t.c -o /tmp/t.o
           file /tmp/t.o
-
-          echo "==== link ===="
-          clang -target arm64-apple-ios15.0 -isysroot "$SDK_PATH" /tmp/t.o \
-            -fuse-ld="$(cat "$TC/ld64_path.txt")" -o /tmp/t.out
+          clang -target arm64-apple-ios15.0 -isysroot "$SDK_PATH" /tmp/t.o -fuse-ld="$(cat "$TC/ld64_path.txt")" -o /tmp/t.out
           file /tmp/t.out
-
-          echo "==== logos ===="
-          cat > /tmp/x.xm <<'EOF'
-%hook NSObject
-- (id)description { return %orig; }
-%end
-EOF
+          printf '%%hook NSObject\n- (id)description { return %%orig; }\n%%end\n' > /tmp/x.xm
+          cat /tmp/x.xm
           perl "$TC/theos/bin/logos.pl" /tmp/x.xm > /tmp/x.mm
           wc -l /tmp/x.mm
-          head -6 /tmp/x.mm
-
+          head -8 /tmp/x.mm
           echo "SMOKE OK"
 
       - name: Import kfd
@@ -155,50 +136,8 @@ EOF
           bash setup.sh
           echo "---- count ----"
           find src -type f | wc -l
-
-      - name: Patch build.sh
-        run: |
-          cd src
-          python3 - <<'PY'
-          import os
-          p = 'build.sh'
-          s = open(p).read()
-
-          if 'LOGOS=' not in s:
-              s = s.replace(
-                  '"$T/bin/logos.pl" tweak/Overlay.xm > tweak/Overlay.mm',
-                  'LOGOS="${LOGOS_PL:-$T/bin/logos.pl}"\n'
-                  'if [ ! -f "$LOGOS" ]; then LOGOS=`find "$T" -name logos.pl -type f 2>/dev/null | head -1`; fi\n'
-                  'if [ -z "$LOGOS" ]; then echo "FATAL: no logos"; exit 1; fi\n'
-                  'perl "$LOGOS" tweak/Overlay.xm > tweak/Overlay.mm\n'
-                  'if [ ! -s tweak/Overlay.mm ]; then echo "FATAL: empty mm"; exit 1; fi'
-              )
-
-          if 'LD64_PATH' not in s:
-              s = s.replace(
-                  'case "$(uname -s)" in\n    Darwin) LDOPT="" ;;\n    *)      LDOPT="-fuse-ld=ld64.lld" ;;\nesac',
-                  'if [ -n "$LD64_PATH" ] && [ -x "$LD64_PATH" ]; then\n'
-                  '  LDOPT="-fuse-ld=$LD64_PATH"\n'
-                  'elif [ "$(uname -s)" = "Darwin" ]; then\n'
-                  '  LDOPT=""\n'
-                  'else\n'
-                  '  LDOPT="-fuse-ld=ld64.lld"\n'
-                  'fi'
-              )
-
-          if 'SDK_PATH' not in s:
-              s = s.replace(
-                  'SDK="$T/sdks/iPhoneOS16.5.sdk"',
-                  'if [ -n "$SDK_PATH" ]; then SDK="$SDK_PATH"; else SDK="$T/sdks/iPhoneOS16.5.sdk"; fi'
-              )
-
-          if '${AR:-ar}' not in s:
-              s = s.replace('ar rcs libkfd.a', '${AR:-ar} rcs libkfd.a')
-
-          open(p, 'w').write(s)
-          print("patched")
-          PY
-          grep -n 'LOGOS=\|LD64_PATH\|SDK_PATH\|AR:-ar' build.sh | head -20
+          echo "---- build.sh head ----"
+          head -12 src/build.sh
 
       - name: Attach kfd
         continue-on-error: true
@@ -209,27 +148,12 @@ EOF
             echo "kfd attached"
           fi
 
-      - name: Verify
-        continue-on-error: true
-        run: |
-          cd src
-          export THEOS="$TC/theos"
-          export SDK_PATH="$TC/sdk"
-          export AR=llvm-ar
-          export PATH="$TC:/usr/local/bin:$PATH"
-          export LOGOS_PL="$TC/theos/bin/logos.pl"
-          [ -f "$TC/ld64_path.txt" ] && export LD64_PATH="$(cat "$TC/ld64_path.txt")"
-          bash verify.sh || true
-
       - name: Build
         run: |
           cd src
           export THEOS="$TC/theos"
-          export SDK_PATH="$TC/sdk"
-          export AR=llvm-ar
-          export PATH="$TC:/usr/local/bin:$PATH"
-          export LOGOS_PL="$TC/theos/bin/logos.pl"
-          [ -f "$TC/ld64_path.txt" ] && export LD64_PATH="$(cat "$TC/ld64_path.txt")"
+          export PATH="/usr/local/bin:$TC:$PATH"
+          export AR=ar
           bash build.sh
 
       - name: Inspect
