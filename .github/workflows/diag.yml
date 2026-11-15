@@ -1,26 +1,22 @@
 name: kfd-check
 on:
-  workflow_dispatch:
+  workflow_dispatch
 jobs:
   c:
     runs-on: ubuntu-22.04
     steps:
       - run: |
-          for repo in Odyssey-Team/Taurine SerotoninApp/Serotonin GenericCoding/poisOnKFD hrtowii/kfd NoorahSmith/kernel-file-descriptor; do
-            echo "======== $repo ========"
-            rm -rf /tmp/t
-            if ! git clone --depth 1 "https://github.com/$repo.git" /tmp/t 2>/dev/null; then
-              echo "  CLONE FAIL"
-              continue
-            fi
-            echo "  -- dirs named kfd --"
-            find /tmp/t -type d -name kfd | head -5
-            echo "  -- .c files containing kopen --"
-            grep -rl "kopen" /tmp/t --include='*.c' 2>/dev/null | head -5
-            echo "  -- .c count per kfd dir --"
-            for d in $(find /tmp/t -type d -name kfd); do
-              echo "    $d -> $(find "$d" -maxdepth 1 -name '*.c' | wc -l)"
-            done
-            echo "  -- total .c in repo --"
-            find /tmp/t -name '*.c' | wc -l
-          done
+          git clone --depth 1 https://github.com/Odyssey-Team/Taurine.git /tmp/t
+          cd /tmp/t/Taurine/exploit/kfd
+          echo "==== ls ===="
+          ls -la
+          echo "==== line counts ===="
+          wc -l *.h
+          echo "==== kfd_krw.h head 40 ===="
+          head -40 kfd_krw.h
+          echo "==== does kfd_krw.h contain function bodies ===="
+          grep -n "^[a-z].*kopen\|^{" kfd_krw.h | head -10
+          echo "==== libkfd.h includes ===="
+          grep -n '#include' libkfd.h
+          echo "==== libkfd.h tail ===="
+          tail -30 libkfd.h
