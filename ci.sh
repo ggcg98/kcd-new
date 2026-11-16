@@ -402,18 +402,35 @@ python3 - <<'PY'
 import re
 p = 'tweak/Overlay.xm'
 s = open(p).read()
-pat = r'for\s*\(\s*int\s+i\s*=\s*0\s*;\s*i\s*<\s*\w+\s*;\s*i\+\+\s*\)\s*\{\s*\n\s*[^\n]{0,90}?\b(\w+)\s*=[^=]'
-m = re.search(pat, s)
+m0 = re.search(r'void\s*\*\s*scan_loop\s*\([^)]*\)\s*\{', s)
+if not m0:
+    print('inject_FAIL no scan_loop')
+    raise SystemExit(0)
+base = m0.end()
+seg = s[base:base + 20000]
+pat = (r'for\s*\(\s*int\s+i\s*=\s*0\s*;\s*i\s*<\s*\w+\s*;\s*i\+\+\s*\)\s*\{\s*\n'
+       r'\s*(?:uint64_t|int64_t|uintptr_t|unsigned\s+long\s+long|unsigned\s+long|void\s*\*)\s+(\w+)\s*=[^=]')
+m = re.search(pat, seg)
 if m:
     var = m.group(1)
+    pos = base + m.end()
     ins = ('\n        g_kcd_last_pawn = (uint64_t)%s;\n'
            '        g_kcd_cur_team = kcd_team_of(g_kcd_last_pawn);\n'
            '        if (g_kcd_botfilter && kcd_is_bot(g_kcd_last_pawn)) continue;') % var
-    s = s[:m.end()] + ins + s[m.end():]
+    s = s[:pos] + ins + s[pos:]
     print('inject_ok var=' + var)
 else:
-    print('inject_FAIL')
+    print('inject_FAIL no loop')
 open(p, 'w').write(s)
+PY
+
+echo "--- scan_loop head 900 ---"
+python3 - <<'PY'
+import re
+s = open('tweak/Overlay.xm').read()
+m = re.search(r'void\s*\*\s*scan_loop\s*\([^)]*\)\s*\{', s)
+if m:
+    print(s[m.end():m.end() + 900])
 PY
 
 echo "===== INJECT SCAN ====="
