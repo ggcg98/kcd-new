@@ -1,5 +1,5 @@
 #!/bin/bash
-set -o pipefail
+set -eo pipefail
 cd "$GITHUB_WORKSPACE"
 TC="$GITHUB_WORKSPACE/.tc"
 mkdir -p "$TC"
@@ -12,7 +12,8 @@ if [ ! -x "$TC/ldid" ]; then
   for v in 14 15 16 13 12 11; do
     if [ -x "/usr/lib/llvm-$v/bin/ld64.lld" ]; then LDP="/usr/lib/llvm-$v/bin/ld64.lld"; break; fi
   done
-  [ -z "$LDP" ] && [ -x /usr/bin/ld64.lld ] && LDP=/usr/bin/ld64.lld
+  if [ -z "$LDP" ] && [ -x /usr/bin/ld64.lld ]; then LDP=/usr/bin/ld64.lld; fi
+  if [ -z "$LDP" ]; then echo "NO LD64 FOUND"; exit 1; fi
   sudo ln -sf "$LDP" /usr/local/bin/ld64.lld
   mkdir -p "$TC/theos/bin/lib/Logos" "$TC/theos/sdks"
   echo "$LDP" > "$TC/ld64_path.txt"
@@ -33,8 +34,11 @@ if [ ! -x "$TC/ldid" ]; then
   cd "$GITHUB_WORKSPACE"
 fi
 
+echo "===== LINK TOOLS ====="
 sudo mkdir -p /usr/local/bin
-if [ -f "$TC/ld64_path.txt" ]; then sudo ln -sf "$(cat "$TC/ld64_path.txt")" /usr/local/bin/ld64.lld; fi
+if [ -f "$TC/ld64_path.txt" ]; then
+  sudo ln -sf "$(cat "$TC/ld64_path.txt")" /usr/local/bin/ld64.lld
+fi
 sudo ln -sf "$TC/ldid" /usr/local/bin/ldid
 
 echo "===== CLONE KFD ====="
@@ -50,7 +54,8 @@ KFD=/tmp/t/Taurine/exploit/kfd
 rm -rf src/kcore/kfd
 mkdir -p src/kcore/kfd
 cp -r "$KFD"/. src/kcore/kfd/
-rm -f src/kcore/kfd/kfd_krw.m src/kcore/kfd/kfd_krw.h
+rm -f src/kcore/kfd/kfd_krw.m
+rm -f src/kcore/kfd/kfd_krw.h
 
 cd src
 
@@ -73,8 +78,8 @@ int kcd_calib_teamid(void);
 int kcd_reflect_teamid(void);
 uint64_t kdetect_physmap(void);
 '''
-if 'g_physmap_base' not in s:
-    s = s.replace('extern int g_kfd_ready;', add.rstrip())
+if 'g_physmap_base' not in s and 'extern int g_kfd_ready;' in s:
+    s = s.replace('extern int g_kfd_ready;', add.rstrip(), 1)
 open(p, 'w').write(s)
 print('krw.h ok')
 PY
@@ -326,7 +331,7 @@ void w64(uint64_t a, uint64_t v) { be_kfd.kwrite(a, &v, 8); }
 void w32(uint64_t a, uint32_t v) { be_kfd.kwrite(a, &v, 4); }
 uint64_t kread_ptr(uint64_t a) { uint64_t v = 0; be_kfd.kread(a, &v, 8); return PAC_STRIP(v); }
 KRWEOF
-echo "krw.c written"
+echo "krw.c ok"
 echo "===== PATCH OVERLAY ====="
 python3 - <<'PY'
 import re
@@ -356,12 +361,12 @@ print('overlay ok')
 PY
 
 echo "===== FIX EXT ====="
-[ -f kcore/koffsets.c ] && mv kcore/koffsets.c kcore/koffsets.m
-[ -f game/ue4_offsets.c ] && mv game/ue4_offsets.c game/ue4_offsets.m
-sed -i 's|kcore/koffsets\.c|kcore/koffsets.m|g' build.sh
-sed -i 's|game/ue4_offsets\.c|game/ue4_offsets.m|g' build.sh
-sed -i 's|kcore/kfd/libkfd/\*\.c|kcore/kfd/*.c|g' build.sh
-sed -i 's|kcore/kfd/libkfd/\*\.m|kcore/kfd/*.m|g' build.sh
+if [ -f kcore/koffsets.c ]; then mv kcore/koffsets.c kcore/koffsets.m; fi
+if [ -f game/ue4_offsets.c ]; then mv game/ue4_offsets.c game/ue4_offsets.m; fi
+sed -i 's|kcore/koffsets\.c|kcore/koffsets.m|g' build.sh || true
+sed -i 's|game/ue4_offsets\.c|game/ue4_offsets.m|g' build.sh || true
+sed -i 's|kcore/kfd/libkfd/\*\.c|kcore/kfd/*.c|g' build.sh || true
+sed -i 's|kcore/kfd/libkfd/\*\.m|kcore/kfd/*.m|g' build.sh || true
 
 echo "===== KILL AVAILABLE ====="
 python3 - <<'PY'
@@ -902,19 +907,25 @@ print('hook ok')
 PY
 
 echo "===== PATCH LINK ====="
-LDP=$(cat "$TC/ld64_path.txt")
-sed -i "s|-fuse-ld=ld64.lld|-fuse-ld=$LDP -Wl,-platform_version,ios,15.0,15.0|g" build.sh
-sed -i 's|-c tweak/Overlay.mm|-x objective-c -c tweak/Overlay.mm|g' build.sh
-sed -i 's|-framework UIKit|-framework UIKit -framework IOKit -framework CoreFoundation -framework CoreGraphics -framework CoreText -framework CoreImage|g' build.sh
+LDP=$(cat "$TC/ld64_path.txt" 2>/dev/null || echo "")
+if [ -z "$LDP" ]; then echo "no ld64 path"; exit 1; fi
+sed -i "s|-fuse-ld=ld64.lld|-fuse-ld=$LDP -Wl,-platform_version,ios,15.0,15.0|g" build.sh || true
+sed -i 's|-c tweak/Overlay.mm|-x objective-c -c tweak/Overlay.mm|g' build.sh || true
+sed -i 's|-framework UIKit|-framework UIKit -framework IOKit -framework CoreFoundation -framework CoreGraphics -framework CoreText -framework CoreImage|g' build.sh || true
 
 echo "===== BUILD ====="
 export THEOS="$TC/theos"
 export PATH="/usr/local/bin:$TC:$PATH"
 export AR=ar
-bash build.sh
+bash build.sh || { echo "===== BUILD FAILED ====="; exit 1; }
 
 echo "===== COLLECT ====="
 cd "$GITHUB_WORKSPACE"
 mkdir -p dist
-cp src/release/*.deb dist/ 2>/dev/null || cp src/*.deb dist/ 2>/dev/null || true
+echo "--- 全盘找 deb ---"
+find . -name "*.deb" -type f 2>/dev/null | head -20 || true
+echo "--- release 目录 ---"
+ls -la src/release 2>/dev/null || echo "no src/release"
+echo "--- 复制 ---"
+find . -name "*.deb" -type f -exec cp {} dist/ \; 2>/dev/null || true
 ls -lh dist/ || true
