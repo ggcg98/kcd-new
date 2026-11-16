@@ -57,6 +57,11 @@ cp -r "$KFD"/. src/kcore/kfd/
 rm -f src/kcore/kfd/kfd_krw.m
 rm -f src/kcore/kfd/kfd_krw.h
 
+echo "===== KFD TREE ====="
+find src/kcore/kfd -maxdepth 2 -type f | head -30 || true
+echo "--- counts ---"
+echo "c=$(find src/kcore/kfd -name '*.c' | wc -l) m=$(find src/kcore/kfd -name '*.m' | wc -l) h=$(find src/kcore/kfd -name '*.h' | wc -l)"
+
 cd src
 
 echo "===== KRW.H ====="
@@ -330,8 +335,6 @@ float rf32(uint64_t a) { float v = 0; be_kfd.kread(a, &v, 4); return v; }
 void w64(uint64_t a, uint64_t v) { be_kfd.kwrite(a, &v, 8); }
 void w32(uint64_t a, uint32_t v) { be_kfd.kwrite(a, &v, 4); }
 uint64_t kread_ptr(uint64_t a) { uint64_t v = 0; be_kfd.kread(a, &v, 8); return PAC_STRIP(v); }
-KRWEOF
-echo "krw.c ok"
 echo "===== PATCH OVERLAY ====="
 python3 - <<'PY'
 import re
@@ -339,20 +342,30 @@ p = 'tweak/Overlay.xm'
 s = open(p).read()
 s = s.replace('if (rw_up() != 0) return NULL;',
               'if (rw_up() != 0) return NULL;\n    g_physmap_base = kdetect_physmap();')
+decl = ('#import <UIKit/UIKit.h>\n'
+        '#include <stdint.h>\n'
+        '#import <CoreGraphics/CoreGraphics.h>\n'
+        'extern CGFloat g_kcd_tsize;\n'
+        'extern UIColor *g_kcd_tcolor;\n'
+        'extern int g_kcd_botfilter;\n'
+        'extern float g_kcd_near;\n'
+        'extern uint64_t g_kcd_near_pawn;\n'
+        'extern uint64_t g_kcd_last_pawn;\n'
+        'extern int g_kcd_cur_team;\n'
+        'extern int g_kcd_back;\n'
+        'extern int g_kcd_count;\n'
+        'extern int g_kcd_human;\n'
+        'extern int g_kcd_teams;\n'
+        'extern uint32_t g_kcd_tmask;\n'
+        'extern UIColor *kcd_team_color(int t);\n')
 if 'g_kcd_tsize' not in s:
-    s = ('extern CGFloat g_kcd_tsize;\n'
-         'extern UIColor *g_kcd_tcolor;\n'
-         'extern int g_kcd_botfilter;\n'
-         'extern float g_kcd_near;\n'
-         'extern uint64_t g_kcd_near_pawn;\n'
-         'extern uint64_t g_kcd_last_pawn;\n'
-         'extern int g_kcd_cur_team;\n'
-         'extern int g_kcd_back;\n'
-         'extern int g_kcd_count;\n'
-         'extern int g_kcd_human;\n'
-         'extern int g_kcd_teams;\n'
-         'extern uint32_t g_kcd_tmask;\n'
-         'extern UIColor *kcd_team_color(int t);\n') + s
+    m = re.search(r'^#(?:import|include)[^\n]*$', s, re.M)
+    if m:
+        s = s[:m.end()] + '\n' + decl + s[m.end():]
+        print('insert after first include')
+    else:
+        s = decl + s
+        print('insert at top')
 s = re.sub(r'systemFontOfSize:[0-9][0-9.]*', 'systemFontOfSize:g_kcd_tsize', s)
 s = re.sub(r'boldSystemFontOfSize:[0-9][0-9.]*', 'boldSystemFontOfSize:g_kcd_tsize', s)
 s = re.sub(r'\[UIColor redColor\](?!\.CGColor)', 'g_kcd_tcolor', s)
@@ -906,6 +919,17 @@ open(p, 'w').write(n)
 print('hook ok')
 PY
 
+echo "===== BUILD.SH KFD CHECK ====="
+echo "--- kfd refs ---"
+grep -n "kfd\|stub\|libkfd\|KCORE\|SRC_KFD" build.sh | head -25 || true
+echo "--- kcore/kfd files ---"
+ls kcore/kfd | head -20 || true
+echo "--- libkfd dir ---"
+ls kcore/kfd/libkfd 2>/dev/null | head -20 || true
+echo "--- c/m count ---"
+find kcore/kfd -name "*.c" | wc -l || true
+find kcore/kfd -name "*.m" | wc -l || true
+
 echo "===== PATCH LINK ====="
 LDP=$(cat "$TC/ld64_path.txt" 2>/dev/null || echo "")
 if [ -z "$LDP" ]; then echo "no ld64 path"; exit 1; fi
@@ -929,3 +953,5 @@ ls -la src/release 2>/dev/null || echo "no src/release"
 echo "--- 复制 ---"
 find . -name "*.deb" -type f -exec cp {} dist/ \; 2>/dev/null || true
 ls -lh dist/ || true
+KRWEOF
+echo "krw.c ok"
