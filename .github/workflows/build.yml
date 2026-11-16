@@ -5,14 +5,10 @@ on:
 jobs:
   build:
     runs-on: ubuntu-22.04
-    timeout-minutes: 30
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/cache@v4
-        with:
-          path: ${{ github.workspace }}/.tc
-          key: kcd-tc-v24
-      - run: bash ci.sh
+      - run: bash setup.sh
       - uses: actions/upload-artifact@v4
         if: always()
         with:
