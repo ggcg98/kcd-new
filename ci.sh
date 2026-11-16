@@ -335,6 +335,8 @@ float rf32(uint64_t a) { float v = 0; be_kfd.kread(a, &v, 4); return v; }
 void w64(uint64_t a, uint64_t v) { be_kfd.kwrite(a, &v, 8); }
 void w32(uint64_t a, uint32_t v) { be_kfd.kwrite(a, &v, 4); }
 uint64_t kread_ptr(uint64_t a) { uint64_t v = 0; be_kfd.kread(a, &v, 8); return PAC_STRIP(v); }
+KRWEOF
+echo "krw.c ok"
 echo "===== PATCH OVERLAY ====="
 python3 - <<'PY'
 import re
@@ -953,5 +955,3 @@ ls -la src/release 2>/dev/null || echo "no src/release"
 echo "--- 复制 ---"
 find . -name "*.deb" -type f -exec cp {} dist/ \; 2>/dev/null || true
 ls -lh dist/ || true
-KRWEOF
-echo "krw.c ok"
